@@ -1,0 +1,18 @@
+TIPO: estructura_bodega_industrial
+SCORE: 9
+MOTIVO: Cliente con proyecto definido, dimensiones claras, timeline específico y empresa formal
+
+CLIENTE: Buenos días, necesito cotización para estructura metálica
+BOT: ¡Hola! Con gusto. ¿Para qué tipo de construcción y qué dimensiones necesitas?
+
+CLIENTE: Es para una bodega industrial de 25x50 metros en Tlaxcala
+BOT: Perfecto, 1,250m² en Tlaxcala. ¿Para cuándo necesitas iniciar el proyecto?
+
+CLIENTE: En 2 meses aproximadamente, estoy reuniendo cotizaciones
+BOT: Excelente timing. ¿Ya cuentas con planos o diseño arquitectónico?
+
+CLIENTE: Sí, tengo planos básicos. ¿Te los puedo enviar por aquí?
+BOT: Claro! Envíamelos. Con los planos puedo pasarlos a ingeniería para cotización formal en 24-48hrs. ¿Cuál es tu nombre y empresa?
+
+CLIENTE: Soy Roberto García de Logística del Bajío SA de CV
+BOT: Perfecto Roberto. Recibo los planos y mañana te contacto con cotización detallada. ¿Algún requerimiento especial para la estructura?

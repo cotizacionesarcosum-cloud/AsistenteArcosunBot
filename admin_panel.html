@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Panel Admin - WhatsApp Bot ARCOSUM</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: white;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            margin-bottom: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            color: #667eea;
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 8px 20px;
+            background: #10b981;
+            color: white;
+            border-radius: 20px;
+            font-weight: bold;
+            margin-top: 10px;
+        }
+
+        .status-badge.offline {
+            background: #ef4444;
+        }
+
+        .dashboard {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: white;
+            padding: 25px;
+            border-radius: 12px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .stat-icon {
+            font-size: 3em;
+            opacity: 0.8;
+        }
+
+        .stat-info h3 {
+            color: #666;
+            font-size: 0.9em;
+            font-weight: normal;
+            margin-bottom: 5px;
+        }
+
+        .stat-info p {
+            font-size: 2em;
+            font-weight: bold;
+            color: #667eea;
+        }
+
+        .main-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+        }
+
+        @media (max-width: 1200px) {
+            .main-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .card {
+            background: white;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
+        }
+
+        .card h2 {
+            color: #667eea;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #f0f0f0;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: #333;
+            font-weight: 600;
+        }
+
+        .form-group input,
+        .form-group textarea,
+        .form-group select {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+
+        .form-group input:focus,
+        .form-group textarea:focus,
+        .form-group select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .form-group textarea {
+            min-height: 100px;
+            resize: vertical;
+        }
+
+        .btn {
+            padding: 12px 30px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-success {
+            background: #10b981;
+            color: white;
+        }
+
+        .btn-danger {
+            background: #ef4444;
+            color: white;
+        }
+
+        .btn-secondary {
+            background: #6b7280;
+            color: white;
+        }
+
+        .seller-list {
+            margin-top: 20px;
+        }
+
+        .seller-item {
+            background: #f9fafb;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .seller-info {
+            flex: 1;
+        }
+
+        .seller-priority {
+            background: #667eea;
+            color: white;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 0.9em;
+            font-weight: bold;
+            margin-right: 10px;
+        }
+
+        .seller-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .btn-small {
+            padding: 6px 15px;
+            font-size: 14px;
+        }
+
+        .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 60px;
+            height: 34px;
+        }
+
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc;
+            transition: .4s;
+            border-radius: 34px;
+        }
+
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 26px;
+            width: 26px;
+            left: 4px;
+            bottom: 4px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+
+        input:checked + .slider {
+            background-color: #10b981;
+        }
+
+        input:checked + .slider:before {
+            transform: translateX(26px);
+        }
+
+        .alert {
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        .alert-success {
+            background: #d1fae5;
+            color: #065f46;
+            border: 1px solid #10b981;
+        }
+
+        .alert-error {
+            background: #fee2e2;
+            color: #991b1b;
+            border: 1px solid #ef4444;
+        }
+
+        .logs-container {
+            background: #1e293b;
+            color: #e2e8f0;
+            padding: 20px;
+            border-radius: 8px;
+            max-height: 400px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+        }
+
+        .log-entry {
+            padding: 5px 0;
+            border-bottom: 1px solid #334155;
+        }
+
+        .log-entry:last-child {
+            border-bottom: none;
+        }
+
+        .log-timestamp {
+            color: #94a3b8;
+        }
+
+        .log-level-info {
+            color: #38bdf8;
+        }
+
+        .log-level-error {
+            color: #f87171;
+        }
+
+        .log-level-success {
+            color: #4ade80;
+        }
+
+        .full-width {
+            grid-column: 1 / -1;
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.5);
+        }
+
+        .modal-content {
+            background-color: white;
+            margin: 5% auto;
+            padding: 30px;
+            border-radius: 15px;
+            max-width: 500px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+        }
+
+        .close {
+            color: #aaa;
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        .close:hover {
+            color: #000;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <h1>🤖 Panel de Administración - WhatsApp Bot</h1>
+            <p>ARCOSUM - Sistema de Automatización con IA</p>
+            <span class="status-badge" id="statusBadge">● ONLINE</span>
+        </div>
+
+        <!-- Dashboard Stats -->
+        <div class="dashboard">
+            <div class="stat-card">
+                <div class="stat-icon">👥</div>
+                <div class="stat-info">
+                    <h3>Total Usuarios</h3>
+                    <p id="totalUsers">0</p>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">💬</div>
+                <div class="stat-info">
+                    <h3>Mensajes Hoy</h3>
+                    <p id="messagesToday">0</p>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">⭐</div>
+                <div class="stat-info">
+                    <h3>Leads Calificados</h3>
+                    <p id="qualifiedLeads">0</p>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">📋</div>
+                <div class="stat-info">
+                    <h3>Cotizaciones Pendientes</h3>
+                    <p id="pendingQuotes">0</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Grid -->
+        <div class="main-grid">
+            <!-- Configuración de WhatsApp -->
+            <div class="card">
+                <h2>📱 Configuración WhatsApp</h2>
+                <form id="whatsappForm">
+                    <div class="form-group">
+                        <label>Access Token</label>
+                        <input type="text" id="accessToken" placeholder="EAALmZC..." required>
+                    </div>
+                    <div class="form-group">
+                        <label>Phone Number ID</label>
+                        <input type="text" id="phoneNumberId" placeholder="897540256772700" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Business Account ID</label>
+                        <input type="text" id="businessAccountId" placeholder="1196745729067901">
+                    </div>
+                    <div class="form-group">
+                        <label>Verify Token (para webhook)</label>
+                        <input type="text" id="verifyToken" placeholder="Token secreto único" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary">💾 Guardar Configuración</button>
+                </form>
+            </div>
+
+            <!-- Configuración de IA -->
+            <div class="card">
+                <h2>🤖 Configuración de IA</h2>
+                <form id="aiForm">
+                    <div class="form-group">
+                        <label>API Key de Claude (Anthropic)</label>
+                        <input type="password" id="anthropicKey" placeholder="sk-ant-api03-..." required>
+                    </div>
+                    <div class="form-group">
+                        <label>Modelo de IA</label>
+                        <select id="aiModel">
+                            <option value="claude-3-5-haiku-20241022" selected>Claude 3.5 Haiku (Rápido)</option>
+                            <option value="claude-3-5-sonnet-20241022">Claude 3.5 Sonnet (Inteligente)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Activar Respuestas con IA</label>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="aiEnabled" checked>
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                    <div class="form-group">
+                        <label>Puntuación Mínima para Notificar (1-10)</label>
+                        <input type="number" id="minLeadScore" min="1" max="10" value="7">
+                    </div>
+                    <button type="submit" class="btn btn-primary">💾 Guardar Configuración</button>
+                </form>
+            </div>
+
+            <!-- Vendedores / Notificaciones -->
+            <div class="card">
+                <h2>👨‍💼 Gestión de Vendedores</h2>
+                <button class="btn btn-success" onclick="openAddSellerModal()">+ Agregar Vendedor</button>
+                
+                <div class="seller-list" id="sellersList">
+                    <!-- Vendedores se cargarán dinámicamente -->
+                </div>
+            </div>
+
+            <!-- Información del Negocio -->
+            <div class="card">
+                <h2>🏢 Información del Negocio</h2>
+                <form id="businessForm">
+                    <div class="form-group">
+                        <label>Nombre del Negocio</label>
+                        <input type="text" id="businessName" value="ARCOSUM" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Teléfono</label>
+                        <input type="text" id="businessPhone" value="+52 222 123 4567" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Email</label>
+                        <input type="email" id="businessEmail" value="contacto@arcosum.com" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Sitio Web</label>
+                        <input type="text" id="businessWebsite" value="www.arcosum.com">
+                    </div>
+                    <div class="form-group">
+                        <label>Horario Entre Semana</label>
+                        <input type="text" id="hoursWeekday" value="9:00 AM - 6:00 PM">
+                    </div>
+                    <div class="form-group">
+                        <label>Horario Sábados</label>
+                        <input type="text" id="hoursSaturday" value="9:00 AM - 2:00 PM">
+                    </div>
+                    <button type="submit" class="btn btn-primary">💾 Guardar</button>
+                </form>
+            </div>
+
+            <!-- Prompt de IA Personalizado -->
+            <div class="card full-width">
+                <h2>✍️ Personalizar Comportamiento del Bot</h2>
+                <div class="form-group">
+                    <label>Instrucciones para la IA (System Prompt)</label>
+                    <textarea id="systemPrompt" rows="8">Eres un asistente virtual de ARCOSUM, empresa mexicana especializada en arcotechos industriales, estructuras metálicas y laminados. Tu trabajo es ser amable, recopilar información de clientes y detectar leads calificados.</textarea>
+                </div>
+                <button class="btn btn-primary" onclick="saveSystemPrompt()">💾 Guardar Prompt</button>
+            </div>
+
+            <!-- Logs en Tiempo Real -->
+            <div class="card full-width">
+                <h2>📊 Logs en Tiempo Real</h2>
+                <div class="logs-container" id="logsContainer">
+                    <div class="log-entry">
+                        <span class="log-timestamp">[2024-01-15 10:30:45]</span>
+                        <span class="log-level-info">[INFO]</span>
+                        Sistema inicializado correctamente
+                    </div>
+                </div>
+                <button class="btn btn-secondary" onclick="clearLogs()" style="margin-top: 10px;">🗑️ Limpiar Logs</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal para Agregar Vendedor -->
+    <div id="sellerModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeAddSellerModal()">&times;</span>
+            <h2>Agregar Nuevo Vendedor</h2>
+            <form id="addSellerForm">
+                <div class="form-group">
+                    <label>Nombre del Vendedor</label>
+                    <input type="text" id="sellerName" required>
+                </div>
+                <div class="form-group">
+                    <label>Número de WhatsApp</label>
+                    <input type="text" id="sellerPhone" placeholder="5212221148841" required>
+                </div>
+                <div class="form-group">
+                    <label>Email (opcional)</label>
+                    <input type="email" id="sellerEmail">
+                </div>
+                <div class="form-group">
+                    <label>Prioridad (1-10)</label>
+                    <input type="number" id="sellerPriority" min="1" max="10" value="5" required>
+                </div>
+                <div class="form-group">
+                    <label>Activo</label>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="sellerActive" checked>
+                        <span class="slider"></span>
+                    </label>
+                </div>
+                <button type="submit" class="btn btn-primary">✅ Agregar Vendedor</button>
+            </form>
+        </div>
+    </div>
+
+    <script src="/static/admin.js"></script>
+</body>
+</html>

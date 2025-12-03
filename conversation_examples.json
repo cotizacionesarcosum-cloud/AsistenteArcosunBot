@@ -1,0 +1,179 @@
+{
+  "ejemplos_cotizaciones_exitosas": [
+    {
+      "id": 1,
+      "tipo": "arcotecho_industrial",
+      "conversacion": [
+        {
+          "cliente": "Hola, buenos días. Necesito información sobre arcotechos",
+          "bot": "¡Hola! 👋 Con gusto te ayudo. ¿Es para un proyecto nuevo o remodelación? ¿De qué dimensiones aproximadamente?"
+        },
+        {
+          "cliente": "Es para una bodega nueva de 20x40 metros en Puebla",
+          "bot": "Perfecto, 800m² es un tamaño ideal para arcotecho. ¿Para cuándo necesitas iniciar el proyecto?"
+        },
+        {
+          "cliente": "En unos 2-3 meses, primero quiero ver precios",
+          "bot": "Excelente. Para darte un presupuesto preciso, un asesor puede visitar el terreno sin costo. ¿Te parece que te contacte mañana para agendar?"
+        },
+        {
+          "cliente": "Sí, perfecto. Mi nombre es Juan Pérez, empresa Logística del Sur",
+          "bot": "Genial Juan. Mañana temprano te contactamos al 5212221234567. ¿Algún horario que prefieras?"
+        }
+      ],
+      "lead_score": 9,
+      "motivo_calificacion": "Cliente con proyecto definido, dimensiones claras, timeline específico, empresa formal"
+    },
+    {
+      "id": 2,
+      "tipo": "estructura_metalica",
+      "conversacion": [
+        {
+          "cliente": "Cuánto cuesta una estructura metálica?",
+          "bot": "¡Hola! El costo depende del tipo de estructura, dimensiones y uso. ¿Para qué tipo de construcción la necesitas?"
+        },
+        {
+          "cliente": "Para techado de estacionamiento comercial, como 15x20m",
+          "bot": "Entendido, 300m² de estacionamiento. ¿Ya tienes el diseño arquitectónico o necesitas asesoría desde cero?"
+        },
+        {
+          "cliente": "Ya tengo planos, solo necesito la estructura y montaje",
+          "bot": "Perfecto. Si me compartes los planos por WhatsApp, puedo enviártelos a ingeniería para cotización en 24-48hrs. ¿Ubicación del proyecto?"
+        },
+        {
+          "cliente": "Está en Cholula, te mando los planos ahorita",
+          "bot": "Excelente, quedo al pendiente de los planos. ¿Cuál es tu nombre y empresa para la cotización formal?"
+        }
+      ],
+      "lead_score": 10,
+      "motivo_calificacion": "Lead caliente: planos listos, dimensiones exactas, listo para cotizar, zona cercana"
+    },
+    {
+      "id": 3,
+      "tipo": "laminado_acero",
+      "conversacion": [
+        {
+          "cliente": "Venden lámina galvanizada?",
+          "bot": "Sí, manejamos lámina galvanizada y diversos perfiles. ¿Qué calibre y cantidad necesitas? (Manejamos del calibre 18 al 24)"
+        },
+        {
+          "cliente": "Cal 22, como 100 láminas de 12 pies",
+          "bot": "Perfecto, 100 piezas cal 22 x 12'. ¿Es para entrega en obra o recoges en planta?"
+        },
+        {
+          "cliente": "Para entrega en San Martín Texmelucan, cuánto sale con flete?",
+          "bot": "Con gusto te cotizo incluyendo flete. ¿Para cuándo lo necesitas? ¿Requieres factura?"
+        },
+        {
+          "cliente": "Para la próxima semana, sí necesito factura. Soy constructor",
+          "bot": "Excelente. Te preparo cotización formal hoy mismo. ¿Me confirmas tu nombre y RFC para la cotización?"
+        }
+      ],
+      "lead_score": 9,
+      "motivo_calificacion": "Compra específica, volumen definido, necesita factura (cliente formal), timeline claro"
+    },
+    {
+      "tipo": "\"C:\\Users\\PC\\Downloads\\bot\\Chat de WhatsApp con +52 222 875 4816\\Chat de WhatsApp con +52 222 875 4816.txt\"",
+      "conversacion": [],
+      "lead_score": 7,
+      "motivo_calificacion": "se tranfiere a vendedor experto",
+      "id": 4
+    },
+    {
+      "tipo": "\"C:\\Users\\PC\\Downloads\\bot\\Chat de WhatsApp con América Rosales\\Chat de WhatsApp con América Rosales.txt\"",
+      "conversacion": [
+        {
+          "cliente": "mensaje"
+        }
+      ],
+      "lead_score": 9,
+      "motivo_calificacion": "El cliente en todo momento de intersó en el servicio",
+      "id": 5
+    },
+    {
+      "tipo": "\"C:\\Users\\PC\\Downloads\\bot\\Chat de WhatsApp con Paulo Cesar Espínola\\Chat de WhatsApp con Paulo Cesar Espínola.txt\"",
+      "conversacion": [],
+      "lead_score": 9,
+      "motivo_calificacion": "Se interesó en todo momento para el mensaje",
+      "id": 6
+    }
+  ],
+  "ejemplos_consultas_generales": [
+    {
+      "id": 4,
+      "tipo": "consulta_horario",
+      "conversacion": [
+        {
+          "cliente": "Qué horario tienen?",
+          "bot": "Lunes a Viernes 8:00-18:00, Sábados 8:00-13:00. ¿En qué puedo ayudarte?"
+        },
+        {
+          "cliente": "Ok gracias",
+          "bot": "Con gusto! Cualquier cosa estoy aquí. 😊"
+        }
+      ],
+      "lead_score": 1,
+      "motivo_calificacion": "Solo consulta informativa, sin interés en servicios"
+    },
+    {
+      "id": 5,
+      "tipo": "pregunta_exploratoria",
+      "conversacion": [
+        {
+          "cliente": "Hacen casas completas?",
+          "bot": "Hacemos estructuras metálicas para construcción. ¿Tienes un proyecto de casa en mente?"
+        },
+        {
+          "cliente": "Sí pero es para dentro de 2 años, apenas estoy viendo opciones",
+          "bot": "Entiendo, es bueno planear con tiempo. Cuando tu proyecto esté más cerca, con gusto te asesoramos. ¿Quieres que guardemos tus datos para contactarte?"
+        },
+        {
+          "cliente": "No gracias, yo les hablo después",
+          "bot": "Perfecto! Cuando gustes estamos aquí. ¡Éxito con tu proyecto! 🏠"
+        }
+      ],
+      "lead_score": 3,
+      "motivo_calificacion": "Interés real pero muy a futuro, no es prioridad inmediata"
+    }
+  ],
+  "contacto_arcosum_techos": {
+    "telefono": "+52 1 222 423 4611",
+    "email": "cotizaciones.arcosum@gmail.com",
+    "web": "www.arcosum.com",
+    "ubicacion": "Tlaxcala, México"
+  },
+  "contacto_arcosum_rolados": {
+    "telefono": "+52 222 114 8841",
+    "email": "rolados.arcosum@gmail.com",
+    "web": "www.arcosumrolados.com",
+    "ubicacion": "Tlaxcala, México"
+  },
+  "patrones_detectar_leads_calificados": {
+    "señales_positivas": [
+      "Menciona dimensiones específicas (20x30m, 500m², etc)",
+      "Indica timeline concreto (2-3 meses, próxima semana, etc)",
+      "Pregunta por precios/cotizaciones",
+      "Tiene planos o diseño",
+      "Menciona empresa o actividad comercial",
+      "Solicita factura",
+      "Proporciona ubicación específica del proyecto",
+      "Pide visita técnica",
+      "Usa términos técnicos correctos (calibre, perfiles, etc)"
+    ],
+    "señales_negativas": [
+      "Solo pregunta horarios/contacto sin contexto",
+      "Proyecto 'algún día' sin timeline",
+      "Respuestas monosilábicas (ok, gracias, bye)",
+      "No responde a preguntas de calificación",
+      "Pregunta muy genérica sin detalles",
+      "Timeline mayor a 6 meses"
+    ]
+  },
+  "guia_respuestas": {
+    "primer_contacto": "Saludo amigable + pregunta calificadora (¿para qué proyecto? ¿qué dimensiones?)",
+    "recopilacion_info": "Hacer preguntas específicas: dimensiones, ubicación, timeline, presupuesto",
+    "cliente_listo": "Ofrecer cotización formal, visita técnica, contacto con asesor",
+    "cliente_tibio": "Dar info general, invitar a contactar cuando esté listo, no presionar",
+    "tono_general": "Amigable, profesional, respuestas cortas (máx 3-4 líneas), usar emojis moderadamente"
+  }
+}

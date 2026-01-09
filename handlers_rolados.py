@@ -41,7 +41,43 @@ class RoladosHandler:
 
 Te ayudaré a procesar tu solicitud de laminados.
 
-📝 *Paso 1 de 5:* ¿Qué servicio necesitas?
+📝 *Paso 2 de 6:* ¿Qué servicio necesitas?
+
+Escribe: rolado (venta de láminas) o suministros"""
+        
+        self.client.send_text_message(phone_number, message)
+        self.db.save_message(phone_number, message, "sent")
+
+    async def _step_0_nombre(self, phone_number: str, user_response: str):
+        """Paso 0: Pedir nombre del cliente"""
+        
+        nombre = user_response.strip()
+        
+        if len(nombre) < 2:
+            state = self.rolados_form_state[phone_number]
+            state["retry_count"] += 1
+            
+            if state["retry_count"] >= 3:
+                logger.warning(f"⚠️ ROLADOS {phone_number} - 3 intentos fallidos en paso nombre")
+                await self._send_vendor_contact(phone_number)
+                return
+            
+            message = f"""❓ Por favor especifica un nombre válido
+
+*Intento {state["retry_count"]} de 3*"""
+            
+            self.client.send_text_message(phone_number, message)
+            self.db.save_message(phone_number, message, "sent")
+            return
+        
+        state = self.rolados_form_state[phone_number]
+        state["data"]["nombre"] = nombre
+        state["step"] = 1
+        state["retry_count"] = 0
+        
+        logger.info(f"✅ Nombre: {nombre}")
+        
+        message = """📝 *Paso 2 de 6:* ¿Qué servicio necesitas?
 
 Escribe: rolado (venta de láminas) o suministros"""
         
@@ -57,7 +93,9 @@ Escribe: rolado (venta de láminas) o suministros"""
         logger.info(f"📋 ROLADOS Form - Step: {current_step}, Message: {message_text}")
         
         try:
-            if current_step == 1:
+            if current_step == 0:
+                await self._step_0_nombre(phone_number, message_text)
+            elif current_step == 1:
                 await self._step_1_servicio(phone_number, message_text)
             elif current_step == 2:
                 await self._step_2_ubicacion(phone_number, message_text)
@@ -131,7 +169,7 @@ Responde SOLO con: rolado, suministros o invalido"""
         
         logger.info(f"✅ Servicio (IA): {detected_service}")
         
-        message = """📝 *Paso 2 de 5:* ¿En qué estado y municipio?
+        message = """📝 *Paso 3 de 6:* ¿En qué estado y municipio?
 
 Ejemplo: Puebla, Puebla o Tlaxcala, Tenancingo"""
         
@@ -165,7 +203,7 @@ Ejemplo: Puebla, Puebla o Tlaxcala, Tenancingo"""
         
         logger.info(f"✅ Ubicación: {user_response.strip()}")
         
-        message = """📝 *Paso 3 de 5:* ¿Cuántos kilos o toneladas necesitas?
+        message = """📝 *Paso 4 de 6:* ¿Cuántos kilos o toneladas necesitas?
 
 Ejemplos válidos:
 - 100 kilos
@@ -242,7 +280,7 @@ Ejemplo: "100 kg" o "2 toneladas"
         
         if servicio == "rolado":
             # Paso 4: Tipo de lámina
-            message = """📝 *Paso 4 de 5:* ¿Qué tipo de lámina?
+            message = """📝 *Paso 5 de 6:* ¿Qué tipo de lámina?
 
 Opciones:
 - Zintro Alum
@@ -315,7 +353,7 @@ Responde SOLO con: zintro_alum, pintro o invalido"""
         lamina_display = "Zintro Alum" if detected_lamina == "zintro_alum" else "Pintro"
         logger.info(f"✅ Lámina (IA): {lamina_display}")
         
-        message = """📝 *Paso 5 de 5:* ¿Qué calibre necesitas?
+        message = """📝 *Paso 6 de 6:* ¿Qué calibre necesitas?
 
 Disponemos de:
 - Calibre 18 (2.4mm)
@@ -509,8 +547,32 @@ Si cambias de idea, escribe cualquier mensaje para empezar de nuevo."""
             self.db.save_message(phone_number, message, "sent")
 
     async def _notify_vendor(self, phone_number: str, form_data: Dict):
-        """Notifica al vendedor"""
+        """Notifica al vendedor usando plantilla notificacion_lead_calificado"""
         
+        try:
+            # Parámetros para plantilla: {{1}} a {{6}}
+            template_params = [
+                form_data.get('nombre', 'N/A'),  # {{1}} Nombre
+                phone_number,  # {{2}} Cliente
+                form_data.get('servicio', 'N/A').upper(),  # {{3}} Servicio
+                form_data.get('cantidad', 'N/A'),  # {{4}} Cantidad
+                form_data.get('ubicacion', 'N/A'),  # {{5}} Ubicación
+                form_data.get('lamina', 'N/A') if form_data.get('servicio') == 'rolado' else form_data.get('calibre', 'N/A'),  # {{6}} Lámina/Calibre
+            ]
+            
+            self.client.send_template_message(
+                to=self.vendor_phone,
+                template_name="notificacion_lead_calificado",
+                language_code="es_MX",
+                parameters=template_params
+            )
+            logger.info(f"📧 Notificación enviada al vendedor (plantilla: notificacion_lead_calificado)")
+            logger.info(f"   Parámetros: {template_params}")
+            return
+        except Exception as e:
+            logger.error(f"❌ Error enviando plantilla: {str(e)}")
+        
+        # Si falla plantilla: Mensaje de texto normal (solo si respondió en 24h)
         notification = f"""🚨 *NUEVA SOLICITUD ROLADOS*
 
 📱 *Cliente:* {phone_number}
@@ -528,9 +590,10 @@ Si cambias de idea, escribe cualquier mensaje para empezar de nuevo."""
         
         try:
             self.client.send_text_message(self.vendor_phone, notification)
-            logger.info(f"📧 Notificación enviada al vendedor")
+            logger.info(f"📧 Notificación (texto) enviada al vendedor")
         except Exception as e:
-            logger.error(f"Error notificando: {str(e)}")
+            logger.error(f"❌ Error notificando al vendedor: {str(e)}")
+            logger.error(f"💡 Solución: Crea una plantilla aprobada en Meta/WhatsApp")
 
     async def _send_vendor_contact(self, phone_number: str):
         """Envía contacto del vendedor"""

@@ -1,11 +1,10 @@
-from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
-from fastapi.responses import HTMLResponse, PlainTextResponse, JSONResponse
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 from datetime import datetime
 import logging
 import os
-import sys
 
 # Importar módulos del sistema
 from config import Config
@@ -70,13 +69,23 @@ async def startup_event():
         ai_assistant = AIAssistant(api_key=Config.ANTHROPIC_API_KEY)
         
         logger.info("Inicializando servicio de notificaciones...")
-        # Configuración simplificada para notificación (usando los teléfonos del .env)
+        smtp_config = {
+            "enabled": Config.SMTP_ENABLED,
+            "smtp_server": Config.SMTP_SERVER,
+            "smtp_port": Config.SMTP_PORT,
+            "username": Config.SMTP_USERNAME,
+            "password": Config.SMTP_PASSWORD,
+            "from_email": Config.SMTP_FROM_EMAIL,
+            "use_tls": Config.SMTP_USE_TLS
+        }
+        
         notification_service = NotificationService(
             whatsapp_client=whatsapp_client,
-            seller_phones_techos=Config.SELLER_PHONE_NUMBERS_TECHOS,
-            seller_emails_techos=Config.SELLER_EMAILS_TECHOS,
-            seller_phones_rolados=Config.SELLER_PHONE_NUMBERS_ROLADOS,
-            seller_emails_rolados=Config.SELLER_EMAILS_ROLADOS,
+            smtp_config=smtp_config,
+            seller_phones_techos=[p.strip() for p in Config.SELLER_PHONE_NUMBERS_TECHOS if p.strip()],
+            seller_emails_techos=[e.strip() for e in Config.SELLER_EMAILS_TECHOS if e.strip()],
+            seller_phones_rolados=[p.strip() for p in Config.SELLER_PHONE_NUMBERS_ROLADOS if p.strip()],
+            seller_emails_rolados=[e.strip() for e in Config.SELLER_EMAILS_ROLADOS if e.strip()],
             template_name=Config.WHATSAPP_TEMPLATE_NAME,
             template_language=Config.WHATSAPP_TEMPLATE_LANGUAGE
         )
@@ -93,25 +102,34 @@ async def startup_event():
         
     except Exception as e:
         logger.error(f"❌ Error durante inicialización: {str(e)}")
-        # No matamos el proceso para permitir depuración, pero logueamos crítico
-        pass
+        raise
 
 
 # -------------------------------
-# PANEL DE ADMINISTRACIÓN
+# PANEL
 # -------------------------------
 @app.get("/", response_class=HTMLResponse)
 async def root():
-    """Página principal"""
+    """Página principal - Panel de administración"""
     try:
         with open("admin_panel.html", "r", encoding="utf-8") as f:
             return HTMLResponse(content=f.read())
     except FileNotFoundError:
-        return HTMLResponse(content="<h1>Panel no encontrado</h1>", status_code=404)
+        return HTMLResponse(content="<h1>Error: admin_panel.html no encontrado</h1>", status_code=500)
+
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_panel():
+    """Panel de administración"""
+    try:
+        with open("admin_panel.html", "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    except FileNotFoundError:
+        return HTMLResponse(content="<h1>Error: admin_panel.html no encontrado</h1>", status_code=500)
+
 
 
 # -------------------------------
-# WEBHOOK DE VERIFICACIÓN
+# WEBHOOK DE VERIFICACIÓN (CORREGIDO)
 # -------------------------------
 @app.get("/webhook")
 async def verify_webhook(request: Request):
@@ -120,114 +138,258 @@ async def verify_webhook(request: Request):
     token = request.query_params.get("hub.verify_token")
     challenge = request.query_params.get("hub.challenge")
 
-    if mode and token:
-        if mode == "subscribe" and token == Config.WHATSAPP_VERIFY_TOKEN:
-            logger.info("✅ Webhook verificado exitosamente!")
-            return PlainTextResponse(content=challenge, status_code=200)
-        else:
-            logger.warning("❌ Fallo en verificación de webhook")
-            raise HTTPException(status_code=403, detail="Verification failed")
-            
-    return {"status": "ok", "message": "Webhook endpoint ready"}
+    logger.info(f"Webhook verification request - Mode: {mode}")
+    logger.info(f"Token recibido: {token}")
+    logger.info(f"Challenge recibido: {challenge}")
+
+    # Si alguien visita /webhook sin parámetros (tu navegador)
+    if mode is None and token is None and challenge is None:
+        return {"status": "ok", "message": "WhatsApp webhook endpoint"}
+
+    # Validación oficial para Meta
+    if mode == "subscribe" and token == Config.WHATSAPP_VERIFY_TOKEN and challenge:
+        logger.info("✅ Webhook verificado exitosamente!")
+        # Responder challenge como TEXTO PLANO (Meta lo requiere)
+        return PlainTextResponse(content=challenge, status_code=200)
+
+    logger.warning("❌ Verificación de webhook fallida!")
+    raise HTTPException(status_code=403, detail="Verification token mismatch")
+
 
 
 # -------------------------------
-# WEBHOOK PARA RECIBIR MENSAJES (CORREGIDO PARA BOTONES)
+# WEBHOOK PARA RECIBIR MENSAJES
 # -------------------------------
 @app.post("/webhook")
-async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
-    """Recibe mensajes entrantes de WhatsApp"""
+async def receive_webhook(request: Request):
+    """Recibe mensajes entrantes de WhatsApp y los procesa con IA"""
     try:
         body = await request.json()
+        logger.info(f"Webhook recibido: {body}")
         
-        # Verificar que es un mensaje de WhatsApp
-        if body.get("object") != "whatsapp_business_account":
-            return JSONResponse(content={"status": "ignored"}, status_code=200)
-
-        entry = body.get("entry", [])[0]
-        changes = entry.get("changes", [])[0]
-        value = changes.get("value", {})
-        
-        if "messages" in value:
-            message = value["messages"][0]
+        if body.get("object") == "whatsapp_business_account":
+            entries = body.get("entry", [])
             
-            # Datos básicos
-            from_number = message["from"]
-            message_id = message["id"]
-            message_type = message["type"]
-            
-            # Variables para extraer contenido
-            message_text = ""
-            media_url = None
-            media_type = None
-            
-            # 1. Mensajes de Texto
-            if message_type == "text":
-                message_text = message["text"]["body"]
+            for entry in entries:
+                changes = entry.get("changes", [])
                 
-            # 2. Mensajes Interactivos (Botones y Listas) - CRÍTICO PARA EL NUEVO FLUJO
-            elif message_type == "interactive":
-                interactive = message["interactive"]
-                if interactive["type"] == "button_reply":
-                    # Extraemos el título para mostrarlo en logs, pero el ID va en el objeto raw
-                    message_text = interactive["button_reply"]["title"]
-                elif interactive["type"] == "list_reply":
-                    message_text = interactive["list_reply"]["title"]
-            
-            # 3. Multimedia
-            elif message_type in ["image", "document", "audio"]:
-                media_type = message_type
-                # Aquí normalmente se procesaría la descarga usando el ID
-                if message_type == "image":
-                    message_text = message["image"].get("caption", "[IMAGEN]")
-                    media_url = message["image"].get("id") # Guardamos ID como referencia
-                elif message_type == "document":
-                    message_text = message["document"].get("caption", "[DOCUMENTO]")
-                    media_url = message["document"].get("id")
+                for change in changes:
+                    value = change.get("value", {})
+                    
+                    if "messages" in value:
+                        messages = value["messages"]
+                        
+                        for message in messages:
+                            from_number = message.get("from")
+                            message_id = message.get("id")
+                            message_type = message.get("type")
+                            
+                            if message_type == "text":
+                                text_body = message.get("text", {}).get("body", "")
+                                logger.info(f"📨 Mensaje de texto de {from_number}: {text_body}")
 
-            logger.info(f"📨 Mensaje recibido de {from_number} (Tipo: {message_type}): {message_text}")
+                                await message_handler.process_message(
+                                    from_number=from_number,
+                                    message_text=text_body,
+                                    message_id=message_id
+                                )
 
-            # Usamos BackgroundTasks para no bloquear el webhook (respuesta rápida a Meta)
-            background_tasks.add_task(
-                message_handler.process_message,
-                from_number=from_number,
-                message_text=message_text,
-                message_id=message_id,
-                media_url=media_url,
-                media_type=media_type,
-                message_raw=message  # <--- ESTO ES LO QUE FALTABA: Pasamos el objeto completo
-            )
-            
-        return JSONResponse(content={"status": "received"}, status_code=200)
+                            elif message_type == "image":
+                                image_data = message.get("image", {})
+                                image_id = image_data.get("id")
+                                caption = image_data.get("caption", "")
+                                logger.info(f"🖼️ Imagen recibida de {from_number}")
 
+                                await message_handler.process_message(
+                                    from_number=from_number,
+                                    message_text=caption or "📸 Imagen enviada",
+                                    message_id=message_id,
+                                    media_url=image_id,
+                                    media_type="image"
+                                )
+
+                            elif message_type == "document":
+                                doc_data = message.get("document", {})
+                                doc_id = doc_data.get("id")
+                                filename = doc_data.get("filename", "documento")
+                                caption = doc_data.get("caption", "")
+                                logger.info(f"📄 Documento recibido de {from_number}: {filename}")
+
+                                await message_handler.process_message(
+                                    from_number=from_number,
+                                    message_text=caption or f"📄 {filename}",
+                                    message_id=message_id,
+                                    media_url=doc_id,
+                                    media_type=f"document ({filename})"
+                                )
+
+                            elif message_type == "interactive":
+                                interactive = message.get("interactive", {})
+                                response_text = ""
+
+                                if interactive.get("type") == "button_reply":
+                                    response_text = interactive.get("button_reply", {}).get("title", "")
+                                elif interactive.get("type") == "list_reply":
+                                    response_text = interactive.get("list_reply", {}).get("title", "")
+
+                                if response_text:
+                                    await message_handler.process_message(
+                                        from_number=from_number,
+                                        message_text=response_text,
+                                        message_id=message_id
+                                    )
+
+                            else:
+                                logger.info(f"ℹ️ Tipo de mensaje: {message_type}")
+                    
+                    if "statuses" in value:
+                        statuses = value["statuses"]
+                        for status in statuses:
+                            logger.debug(f"Estado de mensaje: {status}")
+        
+        return {"status": "received"}
+        
     except Exception as e:
         logger.error(f"❌ Error procesando webhook: {str(e)}")
-        # Siempre responder 200 a Meta para evitar reintentos infinitos
-        return JSONResponse(content={"status": "error"}, status_code=200)
+        return {"status": "error", "message": str(e)}
+
 
 
 # -------------------------------
-# ENDPOINTS DE ESTADO Y TEST
+# ESTADO DEL SERVICIO
 # -------------------------------
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+    return {
+        "status": "healthy",
+        "ai_enabled": Config.USE_AI_RESPONSES,
+        "timestamp": datetime.now().isoformat()
+    }
 
+@app.get("/stats")
+async def get_statistics():
+    if db:
+        stats = db.get_statistics()
+        return {
+            "status": "success",
+            "data": stats
+        }
+    return {"status": "error", "message": "Database not initialized"}
+
+@app.get("/ai-prompt")
+async def get_ai_prompt():
+    """Muestra el prompt completo que está usando la IA (incluyendo ejemplos)"""
+    if ai_assistant:
+        return {
+            "status": "success",
+            "model": ai_assistant.model,
+            "system_prompt": ai_assistant.system_prompt,
+            "examples_loaded": len(ai_assistant.conversation_examples.get('ejemplos_cotizaciones_exitosas', [])),
+            "prompt_length": len(ai_assistant.system_prompt)
+        }
+    return {"status": "error", "message": "AI Assistant not initialized"}
+
+
+
+# -------------------------------
+# TEST DE ENVÍO DE MENSAJES
+# -------------------------------
 @app.post("/test-message")
-async def test_message(phone: str, message: str, background_tasks: BackgroundTasks):
-    """Envía un mensaje de prueba (simulado) al sistema"""
+async def test_message(phone: str, message: str):
     try:
-        # Simulamos un mensaje de texto simple llegando al bot
-        background_tasks.add_task(
-            message_handler.process_message,
-            from_number=phone,
-            message_text=message,
-            message_id=f"test_{datetime.now().timestamp()}",
-            message_raw={"type": "text"}
-        )
-        return {"status": "processing", "message": "Mensaje encolado para procesamiento"}
+        result = whatsapp_client.send_text_message(phone, message)
+        return {
+            "status": "success",
+            "message": "Mensaje enviado",
+            "result": result
+        }
     except Exception as e:
+        logger.error(f"Error enviando mensaje de prueba: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# -------------------------------
+# TEST DE NOTIFICACIONES A VENDEDORES
+# -------------------------------
+@app.post("/test-notification")
+async def test_notification(lead_score: int = 9):
+    """
+    Endpoint para probar el sistema de notificaciones a vendedores
+
+    Args:
+        lead_score: Puntuación del lead (1-10) para simular
+    """
+    try:
+        # Crear datos de prueba de un lead calificado
+        test_lead_data = {
+            "phone_number": "5212221234567",
+            "lead_score": lead_score,
+            "lead_type": "cotizacion_seria",
+            "project_info": {
+                "tipo_proyecto": "Arcotecho industrial",
+                "ubicacion": "Puebla, México",
+                "dimension_aproximada": "20x40 metros (800m²)",
+                "tiempo_estimado": "2-3 meses",
+                "presupuesto_mencionado": "Por definir"
+            },
+            "summary_for_seller": "Cliente interesado en arcotecho para bodega nueva. Proyecto bien definido con dimensiones claras.",
+            "next_action": "Contactar en 24hrs para agendar visita técnica sin costo",
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+
+        # Generar mensaje de notificación
+        notification_message = f"""🔔 *NUEVO LEAD CALIFICADO (TEST)*
+
+📱 *Cliente:* {test_lead_data['phone_number']}
+⭐ *Puntuación:* {test_lead_data['lead_score']}/10
+🏷️ *Tipo:* {test_lead_data['lead_type']}
+
+📋 *RESUMEN DEL PROYECTO:*
+{test_lead_data['summary_for_seller']}
+
+🔧 *DETALLES:*
+• Tipo: {test_lead_data['project_info']['tipo_proyecto']}
+• Ubicación: {test_lead_data['project_info']['ubicacion']}
+• Dimensión: {test_lead_data['project_info']['dimension_aproximada']}
+• Timeline: {test_lead_data['project_info']['tiempo_estimado']}
+
+💡 *ACCIÓN RECOMENDADA:*
+{test_lead_data['next_action']}
+
+⏰ *Fecha:* {test_lead_data['timestamp']}
+
+⚠️ *ESTO ES UNA PRUEBA DEL SISTEMA DE NOTIFICACIONES*"""
+
+        logger.info("="*60)
+        logger.info("🧪 INICIANDO PRUEBA DE NOTIFICACIONES")
+        logger.info("="*60)
+
+        # Enviar notificación
+        await notification_service.notify_qualified_lead(test_lead_data, notification_message)
+
+        return {
+            "status": "success",
+            "message": "Notificación de prueba enviada",
+            "lead_data": test_lead_data,
+            "notification_sent_to": {
+                "whatsapp_phones": notification_service.seller_phones,
+                "emails": notification_service.seller_emails
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Error en prueba de notificación: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+# -------------------------------
+# EJECUCIÓN LOCAL
+# -------------------------------
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(
+        "main:app", 
+        host=Config.HOST, 
+        port=Config.PORT, 
+        reload=Config.DEBUG
+    )

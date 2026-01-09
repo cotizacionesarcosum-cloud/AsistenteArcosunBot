@@ -46,6 +46,41 @@ class MessageHandler:
         self.last_message_timestamp = {}  # {phone_number: datetime}
         self.highest_lead_data = {}  # {phone_number: {ai_analysis, score, conversation_history, media_files, message_id}}
         self.notification_delay = 120  # 2 minutos en segundos
+
+        # NUEVO: Gestión de formularios de ROLADOS
+        self.rolados_form_state = {}  # {phone_number: {"step": int, "data": {...}, "retry_count": int}}
+        
+        # Datos de vendedor ROLADOS
+        self.rolados_vendor = {
+            "name": "Juan Carlos",
+            "phone": "+52 222 987 6543",
+            "email": "ventas-rolados@arcosum.com"
+        }
+        
+        # Opciones disponibles para ROLADOS
+        self.rolados_options = {
+            "tipos_material": [
+                {"id": "galvanizada", "title": "Lámina Galvanizada", "description": "Protección contra oxidación"},
+                {"id": "pintro", "title": "Lámina Pintro", "description": "Acabado pintado"},
+                {"id": "negra", "title": "Lámina Negra", "description": "Acero sin recubrimiento"},
+                {"id": "perfiles", "title": "Perfiles", "description": "Ángulos, canales, vigas"},
+                {"id": "calibres", "title": "Calibres Especiales", "description": "Calibres diversos"},
+            ],
+            "calibres": [
+                {"id": "cal_16", "title": "Calibre 16", "description": "3.2mm"},
+                {"id": "cal_18", "title": "Calibre 18", "description": "2.4mm"},
+                {"id": "cal_20", "title": "Calibre 20", "description": "1.6mm"},
+                {"id": "cal_22", "title": "Calibre 22", "description": "1.2mm"},
+                {"id": "cal_24", "title": "Calibre 24", "description": "0.8mm"},
+                {"id": "otro", "title": "Otro Calibre", "description": "Especifica en mensaje"},
+            ],
+            "dimensiones": [
+                {"id": "1200x2400", "title": "1200 x 2400 mm"},
+                {"id": "1250x2500", "title": "1250 x 2500 mm"},
+                {"id": "rollo", "title": "Rollo (especificar ancho)"},
+                {"id": "otro", "title": "Otras Dimensiones", "description": "Especifica en mensaje"},
+            ]
+        }
     
     async def process_message(self, from_number: str, message_text: str, message_id: str,
                             media_url: Optional[str] = None, media_type: Optional[str] = None):
@@ -91,6 +126,11 @@ class MessageHandler:
             if user_division is None:
                 # Usuario no tiene división, preguntar
                 await self.ask_division(from_number, message_text)
+                return
+
+            # NUEVO: Verificar si está en medio de un formulario de ROLADOS
+            if user_division == "rolados" and from_number in self.rolados_form_state:
+                await self._handle_rolados_form_response(from_number, message_text, message_id)
                 return
 
             # Reactivar usuario si estaba inactivo
@@ -180,6 +220,587 @@ class MessageHandler:
                 )
             except:
                 pass
+
+    # ============= NUEVO: GESTIÓN DE FORMULARIO ROLADOS =============
+
+    async def _handle_rolados_form_response(self, phone_number: str, message_text: str, message_id: str):
+        """Maneja respuestas del formulario interactivo de ROLADOS"""
+        
+        state = self.rolados_form_state[phone_number]
+        current_step = state["step"]
+        retry_count = state.get("retry_count", 0)
+
+        logger.info(f"📋 ROLADOS Form - Step: {current_step}, Retry: {retry_count}, Message: {message_text}")
+
+        try:
+            if current_step == 1:  # Nombre
+                await self._rolados_step_1_name(phone_number, message_text)
+            
+            elif current_step == 2:  # Tipo de material
+                await self._rolados_step_2_material(phone_number, message_text)
+            
+            elif current_step == 3:  # Calibre
+                await self._rolados_step_3_calibre(phone_number, message_text)
+            
+            elif current_step == 4:  # Dimensiones
+                await self._rolados_step_4_dimensiones(phone_number, message_text)
+            
+            elif current_step == 5:  # Cantidad en kilos
+                await self._rolados_step_5_cantidad(phone_number, message_text)
+            
+            elif current_step == 6:  # Confirmación
+                await self._rolados_step_6_confirmation(phone_number, message_text)
+
+        except Exception as e:
+            logger.error(f"Error en formulario ROLADOS para {phone_number}: {str(e)}")
+            await self._send_vendor_contact(phone_number)
+
+    async def _init_rolados_form(self, phone_number: str):
+        """Inicia el formulario de ROLADOS"""
+        self.rolados_form_state[phone_number] = {
+            "step": 1,
+            "data": {},
+            "retry_count": 0
+        }
+        
+        logger.info(f"🆕 Formulario ROLADOS iniciado para {phone_number}")
+        
+        # Paso 1: Nombre
+        await self._rolados_step_1_name(phone_number, None)
+
+    async def _rolados_step_1_name(self, phone_number: str, user_response: Optional[str]):
+        """Paso 1: Solicitar nombre"""
+        
+        if user_response is None:
+            # Primera vez, mostrar instrucción
+            message = """🏭 *FORMULARIO ROLADOS* 📋
+
+Te ayudaré a preparar tu cotización de forma rápida.
+
+📝 *Paso 1 de 6:* ¿Cuál es tu nombre?
+
+(Por favor escribe tu nombre completo)"""
+            
+            self.client.send_text_message(phone_number, message)
+            self.db.save_message(phone_number, message, "sent")
+            return
+
+        # Validar que sea un nombre válido (no números ni caracteres raros)
+        if not self._is_valid_name(user_response):
+            state = self.rolados_form_state[phone_number]
+            state["retry_count"] += 1
+            
+            if state["retry_count"] >= 3:
+                logger.warning(f"⚠️ ROLADOS {phone_number} - 3 intentos fallidos en paso 1")
+                await self._send_vendor_contact(phone_number)
+                return
+            
+            message = f"""❌ Por favor ingresa un nombre válido (sin números ni caracteres especiales)
+
+*Intento {state["retry_count"]} de 3*"""
+            
+            self.client.send_text_message(phone_number, message)
+            self.db.save_message(phone_number, message, "sent")
+            return
+        
+        # Guardar nombre y pasar al siguiente paso
+        state = self.rolados_form_state[phone_number]
+        state["data"]["nombre"] = user_response.strip()
+        state["step"] = 2
+        state["retry_count"] = 0
+        
+        logger.info(f"✅ Nombre guardado: {user_response}")
+        
+        # Paso 2: Tipo de material
+        await self._rolados_step_2_material(phone_number, None)
+
+    async def _rolados_step_2_material(self, phone_number: str, user_response: Optional[str]):
+        """Paso 2: Seleccionar tipo de material"""
+        
+        if user_response is None:
+            # Primera vez, mostrar menú
+            message = """✅ Gracias, {nombre}!
+
+📝 *Paso 2 de 6:* Selecciona el tipo de material que necesitas:"""
+            
+            nombre = self.rolados_form_state[phone_number]["data"].get("nombre", "")
+            message = message.format(nombre=nombre)
+            
+            sections = [
+                {
+                    "title": "Materiales Disponibles",
+                    "rows": self.rolados_options["tipos_material"]
+                }
+            ]
+            
+            self.client.send_interactive_list(
+                phone_number, 
+                message,
+                "Ver Materiales",
+                sections
+            )
+            self.db.save_message(phone_number, message, "sent")
+            return
+
+        # Validar que sea una opción válida
+        valid_ids = [opt["id"] for opt in self.rolados_options["tipos_material"]]
+        
+        if user_response.lower() not in valid_ids:
+            state = self.rolados_form_state[phone_number]
+            state["retry_count"] += 1
+            
+            if state["retry_count"] >= 3:
+                logger.warning(f"⚠️ ROLADOS {phone_number} - 3 intentos fallidos en paso 2")
+                await self._send_vendor_contact(phone_number)
+                return
+            
+            message = f"""❌ Por favor selecciona una opción válida del menú
+
+*Intento {state["retry_count"]} de 3*"""
+            
+            self.client.send_text_message(phone_number, message)
+            self.db.save_message(phone_number, message, "sent")
+            
+            # Re-enviar menú
+            await self._rolados_step_2_material(phone_number, None)
+            return
+        
+        # Guardar material y pasar al siguiente paso
+        state = self.rolados_form_state[phone_number]
+        state["data"]["material"] = user_response
+        state["step"] = 3
+        state["retry_count"] = 0
+        
+        logger.info(f"✅ Material guardado: {user_response}")
+        
+        # Paso 3: Calibre
+        await self._rolados_step_3_calibre(phone_number, None)
+
+    async def _rolados_step_3_calibre(self, phone_number: str, user_response: Optional[str]):
+        """Paso 3: Seleccionar calibre"""
+        
+        if user_response is None:
+            # Primera vez, mostrar menú
+            message = """📝 *Paso 3 de 6:* Selecciona el calibre:"""
+            
+            sections = [
+                {
+                    "title": "Calibres Disponibles",
+                    "rows": self.rolados_options["calibres"]
+                }
+            ]
+            
+            self.client.send_interactive_list(
+                phone_number, 
+                message,
+                "Ver Calibres",
+                sections
+            )
+            self.db.save_message(phone_number, message, "sent")
+            return
+
+        # Validar opción
+        valid_ids = [opt["id"] for opt in self.rolados_options["calibres"]]
+        
+        if user_response.lower() not in valid_ids:
+            state = self.rolados_form_state[phone_number]
+            state["retry_count"] += 1
+            
+            if state["retry_count"] >= 3:
+                logger.warning(f"⚠️ ROLADOS {phone_number} - 3 intentos fallidos en paso 3")
+                await self._send_vendor_contact(phone_number)
+                return
+            
+            message = f"""❌ Por favor selecciona una opción válida
+
+*Intento {state["retry_count"]} de 3*"""
+            
+            self.client.send_text_message(phone_number, message)
+            self.db.save_message(phone_number, message, "sent")
+            
+            await self._rolados_step_3_calibre(phone_number, None)
+            return
+        
+        # Guardar calibre
+        state = self.rolados_form_state[phone_number]
+        state["data"]["calibre"] = user_response
+        state["step"] = 4
+        state["retry_count"] = 0
+        
+        logger.info(f"✅ Calibre guardado: {user_response}")
+        
+        # Paso 4: Dimensiones
+        await self._rolados_step_4_dimensiones(phone_number, None)
+
+    async def _rolados_step_4_dimensiones(self, phone_number: str, user_response: Optional[str]):
+        """Paso 4: Seleccionar dimensiones"""
+        
+        if user_response is None:
+            # Primera vez, mostrar menú
+            message = """📝 *Paso 4 de 6:* Selecciona las dimensiones:"""
+            
+            sections = [
+                {
+                    "title": "Dimensiones Disponibles",
+                    "rows": self.rolados_options["dimensiones"]
+                }
+            ]
+            
+            self.client.send_interactive_list(
+                phone_number, 
+                message,
+                "Ver Dimensiones",
+                sections
+            )
+            self.db.save_message(phone_number, message, "sent")
+            return
+
+        # Validar opción
+        valid_ids = [opt["id"] for opt in self.rolados_options["dimensiones"]]
+        
+        if user_response.lower() not in valid_ids:
+            state = self.rolados_form_state[phone_number]
+            state["retry_count"] += 1
+            
+            if state["retry_count"] >= 3:
+                logger.warning(f"⚠️ ROLADOS {phone_number} - 3 intentos fallidos en paso 4")
+                await self._send_vendor_contact(phone_number)
+                return
+            
+            message = f"""❌ Por favor selecciona una opción válida
+
+*Intento {state["retry_count"]} de 3*"""
+            
+            self.client.send_text_message(phone_number, message)
+            self.db.save_message(phone_number, message, "sent")
+            
+            await self._rolados_step_4_dimensiones(phone_number, None)
+            return
+        
+        # Guardar dimensiones
+        state = self.rolados_form_state[phone_number]
+        state["data"]["dimensiones"] = user_response
+        state["step"] = 5
+        state["retry_count"] = 0
+        
+        logger.info(f"✅ Dimensiones guardadas: {user_response}")
+        
+        # Paso 5: Cantidad en kilos
+        await self._rolados_step_5_cantidad(phone_number, None)
+
+    async def _rolados_step_5_cantidad(self, phone_number: str, user_response: Optional[str]):
+        """Paso 5: Seleccionar cantidad en kilos"""
+        
+        if user_response is None:
+            # Primera vez, mostrar menú de cantidades
+            message = """📝 *Paso 5 de 6:* ¿Cuántos kilos necesitas?"""
+            
+            # Generar opciones de cantidad dinámica
+            cantidad_options = [
+                {"id": "100_250", "title": "100 - 250 kg"},
+                {"id": "250_500", "title": "250 - 500 kg"},
+                {"id": "500_1000", "title": "500 - 1000 kg"},
+                {"id": "1000_2000", "title": "1000 - 2000 kg"},
+                {"id": "2000_plus", "title": "2000+ kg"},
+                {"id": "especifica", "title": "Cantidad Específica", "description": "Escribe la cantidad exacta"},
+            ]
+            
+            sections = [
+                {
+                    "title": "Selecciona Rango o Cantidad",
+                    "rows": cantidad_options
+                }
+            ]
+            
+            self.client.send_interactive_list(
+                phone_number, 
+                message,
+                "Ver Opciones",
+                sections
+            )
+            self.db.save_message(phone_number, message, "sent")
+            return
+
+        # Validar que sea un número válido o una opción del menú
+        valid_ranges = ["100_250", "250_500", "500_1000", "1000_2000", "2000_plus", "especifica"]
+        
+        # Si no es una opción de menú, validar que sea un número
+        if user_response.lower() not in valid_ranges:
+            if not user_response.replace(".", "").replace(",", "").isdigit():
+                state = self.rolados_form_state[phone_number]
+                state["retry_count"] += 1
+                
+                if state["retry_count"] >= 3:
+                    logger.warning(f"⚠️ ROLADOS {phone_number} - 3 intentos fallidos en paso 5")
+                    await self._send_vendor_contact(phone_number)
+                    return
+                
+                message = f"""❌ Por favor ingresa una cantidad válida en kilos (solo números)
+
+Ejemplo: 500 o 1500.5
+
+*Intento {state["retry_count"]} de 3*"""
+                
+                self.client.send_text_message(phone_number, message)
+                self.db.save_message(phone_number, message, "sent")
+                return
+        
+        # Guardar cantidad
+        state = self.rolados_form_state[phone_number]
+        state["data"]["cantidad_kilos"] = user_response
+        state["step"] = 6
+        state["retry_count"] = 0
+        
+        logger.info(f"✅ Cantidad guardada: {user_response}")
+        
+        # Paso 6: Confirmación
+        await self._rolados_step_6_confirmation(phone_number, None)
+
+    async def _rolados_step_6_confirmation(self, phone_number: str, user_response: Optional[str]):
+        """Paso 6: Confirmación y resumen"""
+        
+        state = self.rolados_form_state[phone_number]
+        data = state["data"]
+        
+        if user_response is None:
+            # Mostrar resumen y pedir confirmación
+            resumen = f"""✅ *RESUMEN DE TU SOLICITUD*
+
+👤 *Nombre:* {data.get('nombre', 'N/A')}
+🏭 *Material:* {data.get('material', 'N/A')}
+📏 *Calibre:* {data.get('calibre', 'N/A')}
+📐 *Dimensiones:* {data.get('dimensiones', 'N/A')}
+⚖️ *Cantidad:* {data.get('cantidad_kilos', 'N/A')} kg
+
+¿Es correcto? Responde con:
+✅ Sí, confirmar
+❌ No, corregir"""
+            
+            self.client.send_text_message(phone_number, resumen)
+            self.db.save_message(phone_number, resumen, "sent")
+            return
+
+        # Validar respuesta
+        if user_response.lower() in ["sí", "si", "si,", "sí,", "✅", "ok", "confirmar", "confirmo"]:
+            logger.info(f"✅ Formulario ROLADOS completado para {phone_number}")
+            
+            # Guardar lead en la base de datos
+            self.db.save_lead_analysis(phone_number, {
+                "lead_score": 9,
+                "is_qualified_lead": True,
+                "lead_type": "rolados_form",
+                "summary_for_seller": f"Solicitud ROLADOS: {data.get('cantidad_kilos')} kg de {data.get('material')}",
+                "project_info": data
+            })
+            
+            # Mensaje de análisis (la IA analizando)
+            nombre = data.get("nombre", "cliente")
+            analysis_message = f"""Voy a analizar la información recopilada para verificar si estamos listos para una cotización.
+
+Perfecto, {nombre}. Permíteme utilizar una herramienta para analizar tu solicitud."""
+            
+            self.client.send_text_message(phone_number, analysis_message)
+            self.db.save_message(phone_number, analysis_message, "sent")
+            
+            # Simular pequeño delay de análisis
+            await asyncio.sleep(2)
+            
+            # Analizar si podemos generar cotización o contactar vendedor
+            can_quote = await self._analyze_rolados_quote_feasibility(data)
+            
+            if can_quote:
+                # Si se puede hacer cotización
+                await self._send_rolados_quote_ready(phone_number, data)
+            else:
+                # Si no se puede, conectar con vendedor
+                await self._send_rolados_vendor_needed(phone_number, data)
+            
+            # Notificar al vendedor
+            await self._notify_rolados_vendor(phone_number, data)
+            
+            # Limpiar estado del formulario
+            del self.rolados_form_state[phone_number]
+            
+        elif user_response.lower() in ["no", "no,", "❌", "corregir", "corrijo"]:
+            # Reiniciar el formulario
+            message = """🔄 Entendido. Vamos a empezar de nuevo.
+
+*¿Cuál es tu nombre?*"""
+            
+            self.client.send_text_message(phone_number, message)
+            self.db.save_message(phone_number, message, "sent")
+            
+            # Reiniciar al paso 1
+            self.rolados_form_state[phone_number] = {
+                "step": 1,
+                "data": {},
+                "retry_count": 0
+            }
+        
+        else:
+            # Respuesta no válida
+            state["retry_count"] += 1
+            
+            if state["retry_count"] >= 3:
+                logger.warning(f"⚠️ ROLADOS {phone_number} - 3 intentos fallidos en paso 6")
+                await self._send_vendor_contact(phone_number)
+                return
+            
+            message = f"""❌ Por favor responde con:
+✅ Sí (para confirmar)
+❌ No (para corregir)
+
+*Intento {state["retry_count"]} de 3*"""
+            
+            self.client.send_text_message(phone_number, message)
+            self.db.save_message(phone_number, message, "sent")
+
+    async def _analyze_rolados_quote_feasibility(self, form_data: Dict) -> bool:
+        """
+        Analiza si se puede generar una cotización automática o si se necesita vendedor
+        
+        Retorna True si podemos cotizar, False si necesita contactar vendedor
+        """
+        material = form_data.get("material", "").lower()
+        cantidad = form_data.get("cantidad_kilos", "")
+        
+        # Intentar convertir cantidad a número
+        try:
+            cantidad_num = float(str(cantidad).replace(",", "."))
+        except:
+            # Si no podemos convertir, necesita vendedor
+            return False
+        
+        # Lógica simple: si es material estándar y cantidad normal, podemos cotizar
+        materiales_standard = ["galvanizada", "pintro", "negra"]
+        
+        # Si es material estándar, cantidad entre 100-5000 kg → podemos cotizar
+        if material in materiales_standard and 100 <= cantidad_num <= 5000:
+            return True
+        
+        # En otros casos, contactar vendedor
+        return False
+
+    async def _send_rolados_quote_ready(self, phone_number: str, form_data: Dict):
+        """Envía mensaje cuando sí podemos hacer cotización"""
+        
+        nombre = form_data.get("nombre", "")
+        
+        quote_message = f"""✅ ¡*Excelente, {nombre}!*
+
+He analizado tu solicitud y **sí podemos procesarla directamente** para una cotización. 🎉
+
+📊 *Detalles de tu solicitud:*
+• Material: {form_data.get('material', 'N/A')}
+• Calibre: {form_data.get('calibre', 'N/A')}
+• Dimensiones: {form_data.get('dimensiones', 'N/A')}
+• Cantidad: {form_data.get('cantidad_kilos', 'N/A')} kg
+
+Tu cotización será procesada y te la enviaremos en las próximas 2 horas.
+
+Si tienes alguna duda adicional, puedes contactar directamente a nuestro equipo:
+
+📱 *{self.rolados_vendor['name']}*
+☎️ WhatsApp: {self.rolados_vendor['phone']}
+📧 Email: {self.rolados_vendor['email']}
+
+*¡Gracias por confiar en ARCOSUM ROLADOS!* 🏭"""
+        
+        self.client.send_text_message(phone_number, quote_message)
+        self.db.save_message(phone_number, quote_message, "sent")
+        
+        logger.info(f"✅ Cotización lista para procesar - {phone_number}")
+
+    async def _send_rolados_vendor_needed(self, phone_number: str, form_data: Dict):
+        """Envía mensaje cuando se necesita contactar al vendedor para detalles especiales"""
+        
+        nombre = form_data.get("nombre", "")
+        
+        vendor_message = f"""✅ ¡*Hola, {nombre}!*
+
+He analizado tu solicitud y veo que tienes requerimientos especiales que necesitan atención personalizada. 📋
+
+Para brindarte la **mejor cotización y opciones personalizadas**, te conectaré directamente con nuestro especialista en ROLADOS:
+
+📱 *{self.rolados_vendor['name']}*
+☎️ WhatsApp: {self.rolados_vendor['phone']}
+📧 Email: {self.rolados_vendor['email']}
+
+👉 **Él se comunicará contigo en los próximos 30 minutos** para:
+✅ Confirmar especificaciones técnicas
+✅ Ofrecer opciones personalizadas
+✅ Discutir plazos y entregas
+✅ Resolver cualquier pregunta
+
+Tu solicitud:
+• Material: {form_data.get('material', 'N/A')}
+• Calibre: {form_data.get('calibre', 'N/A')}
+• Dimensiones: {form_data.get('dimensiones', 'N/A')}
+• Cantidad: {form_data.get('cantidad_kilos', 'N/A')} kg
+
+*¡Gracias por tu paciencia y por confiar en ARCOSUM ROLADOS!* 🏭"""
+        
+        self.client.send_text_message(phone_number, vendor_message)
+        self.db.save_message(phone_number, vendor_message, "sent")
+        
+        logger.info(f"📞 Vendedor contactará a {phone_number}")
+
+    async def _notify_rolados_vendor(self, phone_number: str, form_data: Dict):
+        """Notifica al vendedor de ROLADOS sobre la nueva solicitud"""
+        
+        notification = f"""🚨 *NUEVA SOLICITUD ROLADOS* 🚨
+
+👤 *Cliente:* {form_data.get('nombre', 'N/A')}
+📱 *Teléfono:* {phone_number}
+
+📋 *Detalles de la solicitud:*
+• Material: {form_data.get('material', 'N/A')}
+• Calibre: {form_data.get('calibre', 'N/A')}
+• Dimensiones: {form_data.get('dimensiones', 'N/A')}
+• Cantidad: {form_data.get('cantidad_kilos', 'N/A')} kg
+
+⏰ *ACCIÓN REQUERIDA:* Contactar al cliente en los próximos 30 minutos"""
+        
+        # Enviar directamente al teléfono del vendedor
+        try:
+            self.client.send_text_message(
+                self.rolados_vendor['phone'],
+                notification
+            )
+            logger.info(f"📧 Notificación ENVIADA al vendedor: {self.rolados_vendor['phone']}")
+        except Exception as e:
+            logger.error(f"Error enviando notificación al vendedor: {str(e)}")
+
+    async def _send_vendor_contact(self, phone_number: str):
+        """Envía contacto del vendedor cuando falla 3 veces"""
+        
+        message = f"""⚠️ Parece que hay un inconveniente con el formulario.
+
+No te preocupes, te conectaré directamente con nuestro asesor especializado:
+
+📱 *{self.rolados_vendor['name']}*
+☎️ WhatsApp: {self.rolados_vendor['phone']}
+📧 Email: {self.rolados_vendor['email']}
+
+Puedes escribirle directamente y te atenderá en menos de 30 minutos. ¡Gracias por tu paciencia!"""
+        
+        self.client.send_text_message(phone_number, message)
+        self.db.save_message(phone_number, message, "sent")
+        
+        # Limpiar estado del formulario
+        if phone_number in self.rolados_form_state:
+            del self.rolados_form_state[phone_number]
+        
+        logger.info(f"📞 Contacto del vendedor enviado a {phone_number}")
+
+    def _is_valid_name(self, name: str) -> bool:
+        """Valida que el nombre sea válido (solo letras y espacios)"""
+        # Permitir letras, espacios y acentos
+        import re
+        pattern = r"^[a-záéíóúñA-ZÁÉÍÓÚÑ\s]+$"
+        return bool(re.match(pattern, name.strip())) and len(name.strip()) >= 2
+
+    # ============= FIN GESTIÓN FORMULARIO ROLADOS =============
     
     async def _save_media_file(self, phone_number: str, media_url: str, media_type: str):
         """Guarda información de archivo multimedia en caché"""
@@ -288,12 +909,12 @@ class MessageHandler:
                 for idx, media in enumerate(media_files, 1):
                     notification_message += f"\n{idx}. {media['type']} - {media['url']}"
 
-            # Preparar datos del lead - USAR DIVISIÓN DE LA BASE DE DATOS
+            # Preparar datos del lead
             lead_data = {
                 "phone_number": phone_number,
                 "lead_score": ai_analysis.get("lead_score", 0),
                 "lead_type": ai_analysis.get("lead_type", ""),
-                "division": division_db,  # ✅ Usar división de la DB, NO de la IA
+                "division": division_db,
                 "project_info": ai_analysis.get("project_info", {}),
                 "summary_for_seller": ai_analysis.get("summary_for_seller", ""),
                 "next_action": ai_analysis.get("next_action", ""),
@@ -305,10 +926,49 @@ class MessageHandler:
             await self.notifier.notify_qualified_lead(lead_data, notification_message)
 
             logger.info(f"Seller notified about qualified lead: {phone_number}")
+            
+            # NUEVO: Notificar también al cliente
+            await self._notify_client_lead_received(phone_number, ai_analysis)
 
         except Exception as e:
             logger.error(f"Error notifying seller: {str(e)}")
     
+    async def _notify_client_lead_received(self, phone_number: str, ai_analysis: Dict):
+        """
+        Notifica al cliente que su solicitud fue recibida y procesada
+        
+        Args:
+            phone_number: Número del cliente
+            ai_analysis: Análisis del lead con información de la solicitud
+        """
+        try:
+            # Obtener datos relevantes del análisis
+            lead_type = ai_analysis.get("lead_type", "")
+            
+            # Mensaje para el cliente
+            client_message = f"""✅ *¡Hemos recibido tu solicitud!*
+
+Gracias por contactarnos. Tu solicitud ha sido procesada correctamente. 🎉
+
+📋 *Detalles de tu solicitud:*
+• Tipo: {lead_type if lead_type else 'Consulta General'}
+• Fecha: {datetime.now().strftime("%d/%m/%Y %H:%M")}
+
+Un miembro de nuestro equipo analizará tu solicitud y se pondrá en contacto contigo en las próximas 2 horas.
+
+Si tienes preguntas mientras tanto, no dudes en escribir. 😊
+
+*Gracias por confiar en ARCOSUM* 🏭"""
+            
+            # Enviar mensaje al cliente
+            self.client.send_text_message(phone_number, client_message)
+            self.db.save_message(phone_number, client_message, "sent")
+            
+            logger.info(f"✅ Notificación de recibida enviada al cliente: {phone_number}")
+            
+        except Exception as e:
+            logger.error(f"Error notifying client: {str(e)}")
+
     async def send_welcome_message(self, to: str):
         """Envía mensaje de bienvenida a nuevos usuarios"""
         welcome_text = """¡Hola! 👋 Soy el asistente virtual de ARCOSUM.
@@ -368,9 +1028,16 @@ Laminados y suministros industriales
             self.db.set_user_division(to, "rolados")
             response = """Perfecto! 🔧 Te atenderé para *ARCOSUM ROLADOS* (Laminados y suministros industriales).
 
-¿En qué puedo ayudarte hoy?"""
+Para agilizar tu solicitud de cotización, te guiaré a través de un formulario rápido.
+
+¿Comenzamos? 📋"""
+            
             self.client.send_text_message(to, response)
             self.db.save_message(to, response, "sent")
+            
+            # NUEVO: Iniciar formulario de ROLADOS
+            asyncio.create_task(self._init_rolados_form(to))
+            
             logger.info(f"✅ División ROLADOS asignada a {to}")
 
         else:

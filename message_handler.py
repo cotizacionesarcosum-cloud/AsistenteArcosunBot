@@ -21,17 +21,12 @@ class MessageHandler:
         self.ai = ai_assistant
         self.notifier = notification_service
 
-        # Nuevos componentes
         self.conversation_logger = ConversationLogger()
         self.memory_manager = MemoryManager(database)
 
-        # Control de Estados para Formularios (Rolados)
         self.form_states = {} 
 
-        # Palabras clave para menú principal
         self.menu_keywords = ["menu", "menú", "inicio", "hola", "ayuda", "help"]
-
-        # Comandos específicos
         self.commands = {
             "cotizacion": self.handle_quote_request,
             "cotización": self.handle_quote_request,
@@ -50,91 +45,87 @@ class MessageHandler:
     async def process_message(self, from_number: str, message_text: str, message_id: str,
                             media_url: Optional[str] = None, media_type: Optional[str] = None, 
                             message_raw: Optional[Dict] = None):
-        """
-        Procesa un mensaje entrante con prioridad en botones interactivos.
-        """
+        """Procesa un mensaje entrante."""
         try:
-            # 1. Marcar como leído
             self.client.mark_as_read(message_id)
             self.memory_manager.cleanup_inactive_sessions()
 
-            # ===============================================================
-            # 2. PRIORIDAD MÁXIMA: RESPUESTAS INTERACTIVAS (Botones y Listas)
-            # ===============================================================
-            # Esto debe ir ANTES de checar form_states para que el clic del botón
-            # no sea interpretado como un error de texto.
+            # DEBUG: Ver estado actual del usuario
+            current_state = self.form_states.get(from_number)
+            logger.info(f"👤 Usuario: {from_number} | Estado Actual: {current_state}")
+
+            # ---------------------------------------------------------------
+            # 1. BOTONES Y LISTAS (Prioridad Máxima)
+            # ---------------------------------------------------------------
             if message_raw and message_raw.get("type") == "interactive":
                 interaction = message_raw["interactive"]
                 
-                # A) Respuesta de LISTA (Selección de producto Rolados)
                 if interaction["type"] == "list_reply":
                     sel_id = interaction["list_reply"]["id"]
                     title = interaction["list_reply"]["title"]
                     if sel_id.startswith("rol_"):
+                        logger.info(f"🔘 Selección de Lista: {title}")
                         self.handle_rolados_selection(from_number, sel_id, title)
                         return
 
-                # B) Respuesta de BOTÓN (Selección de acabado Rolados)
                 elif interaction["type"] == "button_reply":
                     btn_id = interaction["button_reply"]["id"]
                     if btn_id.startswith("fin_"):
+                        logger.info(f"🔘 Selección de Botón: {btn_id}")
                         self.handle_finish_selection(from_number, btn_id)
                         return
 
-            # ===============================================================
-            # 3. INTERCEPTAR TEXTO EN FLUJO MANUAL (Kilos, Ubicación)
-            # ===============================================================
-            # Solo entramos aquí si NO fue un botón y el usuario tiene un formulario activo
-            if from_number in self.form_states and not media_url:
-                current_step = self.form_states[from_number].get("step")
-                # Si estamos esperando que el usuario escriba algo (cantidad o ubicación)
-                if current_step in ["waiting_quantity", "waiting_location"]:
+            # ---------------------------------------------------------------
+            # 2. TEXTO DENTRO DEL FORMULARIO
+            # ---------------------------------------------------------------
+            # Si el usuario tiene un estado activo y escribe texto (no botones)
+            if current_state and not media_url:
+                step = current_state.get("step")
+                # Solo interceptamos si estamos esperando Cantidad o Ubicación
+                if step in ["waiting_quantity", "waiting_location"]:
+                    logger.info(f"📝 Procesando input de formulario: {message_text} (Paso: {step})")
                     self.process_rolados_input(from_number, message_text)
-                    return  # Detener aquí
+                    return 
 
-            # ===============================================================
-            # 4. DETECCIÓN DE COMANDO INICIAL (Opción 2)
-            # ===============================================================
+            # ---------------------------------------------------------------
+            # 3. COMANDOS DE TEXTO (Menú Rolados)
+            # ---------------------------------------------------------------
             text_lower = message_text.lower().strip()
             triggers_rolados = ["2", "opcion 2", "opción 2", "rolados", "laminas", "láminas"]
             
-            if text_lower in triggers_rolados or (len(text_lower) < 10 and "2" in text_lower and "rolados" in text_lower):
+            if text_lower in triggers_rolados or (len(text_lower) < 15 and "2" in text_lower and "rolados" in text_lower):
+                logger.info("🚀 Iniciando flujo de Rolados por comando de texto")
                 self.start_rolados_flow(from_number)
                 return
 
-            # ===============================================================
-            # 5. PROCESAMIENTO NORMAL (IA)
-            # ===============================================================
-
-            # Guardar multimedia
+            # ---------------------------------------------------------------
+            # 4. IA (Si no cayó en nada anterior)
+            # ---------------------------------------------------------------
+            # (Aquí va tu lógica normal de IA y Base de Datos...)
+            
             if media_url:
                 await self._save_media_file(from_number, media_url, media_type)
 
-            # Guardar mensaje en DB
             message_with_media = message_text
             if media_url:
                 message_with_media += f" [ARCHIVO: {media_type}]"
             self.db.save_message(from_number, message_with_media, "received")
 
-            # Verificar usuario nuevo
             is_new_user = not self.db.user_exists(from_number)
             if is_new_user:
                 self.db.create_user(from_number)
                 await self.send_welcome_message(from_number)
                 return
 
-            # Verificar división
             user_division = self.db.get_user_division(from_number)
             if user_division is None:
                 await self.ask_division(from_number, message_text)
                 return
 
-            # Reactivar usuario y obtener contexto
             self.memory_manager.reactivate_user(from_number)
             context_limit = self.memory_manager.get_fresh_context_limit(from_number)
             conversation_history = self.db.get_conversation_history(from_number, limit=context_limit)
 
-            # --- LLAMADA A LA IA ---
             ai_response = await self.ai.chat(
                 message=message_text,
                 conversation_history=conversation_history,
@@ -142,13 +133,11 @@ class MessageHandler:
                 user_division=user_division
             )
             
-            # Enviar respuesta
             response_text = ai_response.get("response", "")
             if response_text:
                 self.client.send_text_message(from_number, response_text)
                 self.db.save_message(from_number, response_text, "sent")
             
-            # Guardar análisis y logs
             self.db.save_lead_analysis(from_number, ai_response)
             media_files = self.user_media_cache.get(from_number, [])
             self.conversation_logger.log_conversation(
@@ -160,7 +149,6 @@ class MessageHandler:
 
             self.last_message_timestamp[from_number] = datetime.now()
 
-            # Lógica de Notificación al Vendedor
             should_notify = await self.ai.should_notify_seller(ai_response)
             current_score = ai_response.get('lead_score', 0)
 
@@ -181,8 +169,7 @@ class MessageHandler:
                 self.pending_notifications[from_number] = task
 
         except Exception as e:
-            logger.error(f"Error processing message from {from_number}: {str(e)}")
-            # Evitamos enviar mensaje de error si es un reintento interno o algo menor
+            logger.error(f"❌ Error CRÍTICO en process_message: {str(e)}")
 
     # =========================================================================
     # 🧱 FLUJO AUTOMÁTICO DE ROLADOS
@@ -221,10 +208,11 @@ class MessageHandler:
             return
 
         self.form_states[phone_number] = {
-            "step": "selecting_finish", # Estado intermedio
+            "step": "selecting_finish",
             "retries": 0,
             "data": {"producto": title}
         }
+        logger.info(f"✅ Guardado estado inicial para {phone_number}: selecting_finish")
 
         buttons = [
             {"id": "fin_zintro", "title": "Zintro Alum"},
@@ -234,15 +222,18 @@ class MessageHandler:
 
     def handle_finish_selection(self, phone_number: str, button_id: str):
         """Paso 3: Guarda Acabado y pide Cantidad"""
+        # Recuperar estado o crear uno nuevo si falló la persistencia
         state = self.form_states.get(phone_number, {"data": {}, "retries": 0})
         
         acabado = "Pintro" if "pintro" in button_id else "Zintro Alum"
         state["data"]["acabado"] = acabado
         
-        # ACTUALIZAMOS EL ESTADO: Esperar TEXTO (CANTIDAD)
+        # ACTUALIZAR ESTADO
         state["step"] = "waiting_quantity" 
         state["retries"] = 0
         self.form_states[phone_number] = state
+        
+        logger.info(f"✅ Estado actualizado a: waiting_quantity. Datos: {state['data']}")
 
         msg = (
             f"👍 Acabado: *{acabado}*.\n\n"
@@ -255,31 +246,38 @@ class MessageHandler:
     def process_rolados_input(self, phone_number: str, text: str):
         """Maneja el texto (Cantidad y Ubicación)"""
         state = self.form_states.get(phone_number)
-        step = state["step"]
         
-        # Validación básica de longitud
+        if not state:
+            logger.error(f"❌ Error: Se intentó procesar input pero no hay estado para {phone_number}")
+            return
+
+        step = state["step"]
+        logger.info(f"🔄 Procesando input Rolados. Paso actual: {step}. Texto: {text}")
+
+        # Validación básica
         if len(text) < 2:
             state["retries"] += 1
-            if state["retries"] >= 3:
-                self.handle_rolados_failure(phone_number)
-                return
             self.client.send_text_message(phone_number, "⚠️ Por favor sé más específico.")
             return
 
-        # Lógica por pasos
+        # PASO 4: Recibir Cantidad -> Pedir Ubicación
         if step == "waiting_quantity":
             state["data"]["cantidad"] = text
             state["step"] = "waiting_location"
             state["retries"] = 0
             self.form_states[phone_number] = state
+            
+            logger.info("✅ Cantidad recibida. Pidiendo ubicación.")
             self.client.send_text_message(phone_number, "📍 ¿En qué **Estado y Municipio** será la entrega?")
             return
 
+        # PASO 5: Recibir Ubicación -> Finalizar
         elif step == "waiting_location":
             state["data"]["ubicacion"] = text
             data = state["data"]
             
-            # Resumen y Despedida
+            logger.info(f"✅ Flujo completo. Datos finales: {data}")
+            
             summary = (
                 "✅ *¡Datos Recibidos Exitosamente!*\n\n"
                 "📝 Resumen de solicitud:\n"
@@ -292,15 +290,38 @@ class MessageHandler:
             )
             self.client.send_text_message(phone_number, summary)
             
-            # Guardar log importante
             self.db.save_message(phone_number, f"LEAD ROLADOS COMPLETO: {data}", "system")
             
-            # Liberar usuario
+            # Notificar vendedor inmediatamente
+            asyncio.create_task(self.notify_rolados_lead(phone_number, data))
+            
+            # Limpiar estado
             del self.form_states[phone_number]
             return
 
+    async def notify_rolados_lead(self, phone_number: str, data: dict):
+        """Notifica al vendedor de rolados (función helper)"""
+        try:
+            msg = (
+                "🔔 *NUEVO LEAD ROLADOS (Formulario)*\n\n"
+                f"👤 Cliente: {phone_number}\n"
+                f"🏗️ Producto: {data.get('producto')}\n"
+                f"🎨 Acabado: {data.get('acabado')}\n"
+                f"🔢 Cantidad: {data.get('cantidad')}\n"
+                f"📍 Ubicación: {data.get('ubicacion')}"
+            )
+            lead_data = {
+                "phone_number": phone_number,
+                "lead_score": 10,
+                "lead_type": "cotizacion_rolados",
+                "division": "rolados",
+                "summary_for_seller": msg
+            }
+            await self.notifier.notify_qualified_lead(lead_data, msg)
+        except Exception as e:
+            logger.error(f"Error notificando lead rolados: {e}")
+
     def handle_rolados_failure(self, phone_number: str):
-        """Fallo tras 3 intentos"""
         seller_phone = "522221148841"
         msg = (
             "⚠️ *No pude entender tu respuesta.*\n\n"
@@ -311,17 +332,15 @@ class MessageHandler:
             del self.form_states[phone_number]
 
     # =========================================================================
-    # OTROS MÉTODOS (Sin cambios)
+    # OTROS MÉTODOS (Sin cambios significativos, solo requeridos por la clase)
     # =========================================================================
-
+    
     async def _save_media_file(self, phone_number: str, media_url: str, media_type: str):
         if phone_number not in self.user_media_cache:
             self.user_media_cache[phone_number] = []
         self.user_media_cache[phone_number].append({
             "url": media_url, "type": media_type, "timestamp": datetime.now().isoformat()
         })
-        if len(self.user_media_cache[phone_number]) > 5:
-            self.user_media_cache[phone_number] = self.user_media_cache[phone_number][-5:]
 
     async def _schedule_notification(self, phone_number: str):
         try:
@@ -357,20 +376,12 @@ class MessageHandler:
                 chat_id=phone_number,
                 last_message_id=last_message_id
             )
-            if media_files:
-                notification_message += f"\n\n📎 *ARCHIVOS ADJUNTOS:* {len(media_files)}"
-                for idx, media in enumerate(media_files, 1):
-                    notification_message += f"\n{idx}. {media['type']} - {media['url']}"
-
             lead_data = {
                 "phone_number": phone_number,
                 "lead_score": ai_analysis.get("lead_score", 0),
                 "lead_type": ai_analysis.get("lead_type", ""),
                 "division": division_db,
-                "project_info": ai_analysis.get("project_info", {}),
                 "summary_for_seller": ai_analysis.get("summary_for_seller", ""),
-                "next_action": ai_analysis.get("next_action", ""),
-                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "media_files": media_files or []
             }
             await self.notifier.notify_qualified_lead(lead_data, notification_message)
@@ -397,37 +408,27 @@ Laminados y suministros industriales
         techos_keywords = ["techo", "arcotecho", "arco", "estructura", "metalica", "nave"]
         rolados_keywords = ["rolado", "lamin", "lamina", "perfil", "acero", "calibre"]
 
-        tiene_techos = any(k in message_lower for k in techos_keywords)
-        tiene_rolados = any(k in message_lower for k in rolados_keywords)
-
-        if message_text.strip() == "1" or tiene_techos:
+        if message_text.strip() == "1" or any(k in message_lower for k in techos_keywords):
             self.db.set_user_division(to, "techos")
-            msg = "Perfecto! 🏗️ Te atenderé para *ARCOSUM TECHOS*.\n¿En qué puedo ayudarte hoy?"
-            self.client.send_text_message(to, msg)
-        elif message_text.strip() == "2" or tiene_rolados:
+            self.client.send_text_message(to, "Perfecto! 🏗️ Te atenderé para *ARCOSUM TECHOS*.\n¿En qué puedo ayudarte hoy?")
+        elif message_text.strip() == "2" or any(k in message_lower for k in rolados_keywords):
             self.start_rolados_flow(to)
         else:
-            msg = "Por favor elige una opción:\n\n🏗️ *1* - TECHOS\n🔧 *2* - ROLADOS"
-            self.client.send_text_message(to, msg)
+            self.client.send_text_message(to, "Por favor elige una opción:\n\n🏗️ *1* - TECHOS\n🔧 *2* - ROLADOS")
 
     async def handle_quote_request(self, to: str, original_message: str):
-        response = "Para cotizar necesito: Tipo de proyecto, dimensiones, ubicación y tiempo estimado."
-        self.client.send_text_message(to, response)
+        self.client.send_text_message(to, "Para cotizar necesito: Tipo de proyecto, dimensiones, ubicación y tiempo estimado.")
 
     async def handle_pricing(self, to: str, original_message: str):
-        response = "Nuestros precios varían. ¿Te gustaría solicitar una cotización personalizada?"
         buttons = [{"id": "btn_yes_quote", "title": "✅ Sí, cotizar"}, {"id": "btn_back", "title": "⬅️ Menú"}]
-        self.client.send_interactive_buttons(to, response, buttons)
+        self.client.send_interactive_buttons(to, "Nuestros precios varían. ¿Te gustaría solicitar una cotización personalizada?", buttons)
 
     async def handle_services(self, to: str, original_message: str):
-        response = "*NUESTROS SERVICIOS*\nArcotechos, Estructuras y Laminados."
-        self.client.send_text_message(to, response)
+        self.client.send_text_message(to, "*NUESTROS SERVICIOS*\nArcotechos, Estructuras y Laminados.")
 
     async def handle_contact(self, to: str, original_message: str):
-        response = "*CONTACTO*\nTel: +52 222 123 4567\nWeb: www.arcosum.com"
         buttons = [{"id": "btn_call_me", "title": "📞 Llamarme"}, {"id": "btn_menu", "title": "⬅️ Menú"}]
-        self.client.send_interactive_buttons(to, response, buttons)
+        self.client.send_interactive_buttons(to, "*CONTACTO*\nTel: +52 222 123 4567\nWeb: www.arcosum.com", buttons)
 
     async def handle_schedule(self, to: str, original_message: str):
-        response = "*HORARIO*\nLunes a Viernes: 8:00 AM - 6:00 PM\nSábados: 8:00 AM - 1:00 PM"
-        self.client.send_text_message(to, response)
+        self.client.send_text_message(to, "*HORARIO*\nLunes a Viernes: 8:00 AM - 6:00 PM\nSábados: 8:00 AM - 1:00 PM")

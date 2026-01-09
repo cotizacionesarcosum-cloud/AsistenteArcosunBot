@@ -98,7 +98,7 @@ Te ayudaré a procesar tu solicitud de laminados.
 
 📝 *Paso 1 de 6:* ¿Cuál es tu nombre?
 
-(Por favor, escribe tu nombre y apellido)"""
+(Por favor, escribe tu nombre completo)"""
         
         self.client.send_text_message(phone_number, message)
         self.db.save_message(phone_number, message, "sent")
@@ -258,21 +258,52 @@ Ejemplo: Puebla, Puebla o Tlaxcala, Tenancingo"""
         
         message = """📝 *Paso 3 de 6:* ¿Cuántos kilos o toneladas necesitas?
 
-Ejemplos válidos:
-- 100 kilos
+*Opción 1 - Si sabes el tonelaje:*
 - 100 kg
 - 2 toneladas
 - 1.5 ton
-- cien kilos
-- media tonelada"""
+
+*Opción 2 - Si NO sabes el tonelaje:*
+Dame las medidas de la obra
+Formato: Ancho x Largo
+Ejemplo: 20x30"""
         
         self.client.send_text_message(phone_number, message)
         self.db.save_message(phone_number, message, "sent")
 
     async def _step_3_cantidad(self, phone_number: str, user_response: str):
-        """Paso 3: IA extrae cantidad de múltiples formatos"""
+        """Paso 3: IA extrae cantidad de múltiples formatos o medidas"""
         
-        # Usar IA para extraer cantidad de forma inteligente
+        user_lower = user_response.lower().strip()
+        
+        # PRIMERO: Intentar detectar si es formato de medidas (AxB o A x B)
+        medidas_pattern = r"(\d+[\.,]?\d*)\s*x\s*(\d+[\.,]?\d*)"
+        medidas_match = re.search(medidas_pattern, user_lower)
+        
+        if medidas_match:
+            # Es medidas, saltar directamente al paso 3.5
+            state = self.rolados_form_state[phone_number]
+            medidas = f"{medidas_match.group(1)}x{medidas_match.group(2)}"
+            state["data"]["medidas"] = medidas
+            state["step"] = 4
+            state["retry_count"] = 0
+            
+            logger.info(f"✅ Medidas detectadas: {medidas}")
+            
+            # Paso 4: Tipo de lámina
+            message = """📝 *Paso 4 de 6:* ¿Qué tipo de lámina?
+
+Opciones:
+- Zintro Alum
+- Pintro
+
+(Escribe cualquiera de estas)"""
+            
+            self.client.send_text_message(phone_number, message)
+            self.db.save_message(phone_number, message, "sent")
+            return
+        
+        # SEGUNDO: Intentar extraer cantidad en toneladas/kg
         ia_prompt = f"""Extrae la cantidad de esta respuesta del usuario.
 
 Respuesta: "{user_response}"
@@ -281,51 +312,55 @@ Normaliza el resultado a formato: "número unidad" (ejemplo: "100 kg", "2 tonela
 
 Responde SOLO con el formato normalizado, o "INVALIDO" si no puedes extraer."""
         
+        cantidad = None
+        
         try:
             ia_response = await self.ai.generate_response(ia_prompt)
             extracted_quantity = ia_response.strip()
             
-            if extracted_quantity.lower() == "invalido":
-                raise ValueError("IA marcó como inválido")
-            
-            # Validar que IA extrajo algo sensato
-            if not any(unit in extracted_quantity.lower() for unit in ["kg", "tonelada", "ton", "kilo"]):
-                raise ValueError("Formato inválido")
-            
-            cantidad = extracted_quantity
-            logger.info(f"✅ Cantidad (IA): {cantidad}")
-        
+            if extracted_quantity.lower() != "invalido":
+                # Validar que IA extrajo algo sensato
+                if any(unit in extracted_quantity.lower() for unit in ["kg", "tonelada", "ton", "kilo"]):
+                    cantidad = extracted_quantity
+                    logger.info(f"✅ Cantidad (IA): {cantidad}")
         except:
-            # Fallback: intentar regex simple
+            pass
+        
+        # Si IA no detectó cantidad en toneladas, intentar regex simple
+        if not cantidad:
             pattern = r"(\d+[\.,]?\d*)\s*(kg|kilogramo|kilos|tonelada|ton|t)"
             match = re.search(pattern, user_response.lower())
             
-            if not match:
-                state = self.rolados_form_state[phone_number]
-                state["retry_count"] += 1
-                
-                if state["retry_count"] >= 3:
-                    logger.warning(f"⚠️ ROLADOS {phone_number} - 3 intentos fallidos en paso 3")
-                    await self._send_vendor_contact(phone_number)
-                    return
-                
-                message = f"""❓ No entendí la cantidad. Por favor especifica:
-- Número: 100, 50, 2.5, etc.
-- Unidad: kg, kilos, toneladas, ton
-
-Ejemplo: "100 kg" o "2 toneladas"
-
-*Intento {state["retry_count"]} de 3*"""
-                
-                self.client.send_text_message(phone_number, message)
-                self.db.save_message(phone_number, message, "sent")
+            if match:
+                cantidad = f"{match.group(1)} {match.group(2)}"
+        
+        # Si aún no tenemos cantidad, reintentar
+        if not cantidad:
+            state = self.rolados_form_state[phone_number]
+            state["retry_count"] += 1
+            
+            if state["retry_count"] >= 3:
+                logger.warning(f"⚠️ ROLADOS {phone_number} - 3 intentos fallidos en paso 3")
+                await self._send_vendor_contact(phone_number)
                 return
             
-            cantidad = f"{match.group(1)} {match.group(2)}"
+            message = f"""❓ No entendí. Por favor especifica:
+
+*Opción 1 - Tonelaje:*
+"100 kg" o "2 toneladas"
+
+*Opción 2 - Medidas de la obra:*
+"20x30" o "1.5x2"
+
+*Intento {state["retry_count"]} de 3*"""
+            
+            self.client.send_text_message(phone_number, message)
+            self.db.save_message(phone_number, message, "sent")
+            return
         
         state = self.rolados_form_state[phone_number]
         state["data"]["cantidad"] = cantidad
-        state["step"] = 4  # Avanzar a Step 4 (no 3.5)
+        state["step"] = 4  # Avanzar a Step 4
         state["retry_count"] = 0
         
         # Verificar si es ROLADO o SUMINISTROS
@@ -348,6 +383,11 @@ Opciones:
             # Si es suministros, saltamos a confirmación
             state["step"] = 6
             await self._step_6_confirmation(phone_number, None)
+
+    async def _step_3_5_medidas(self, phone_number: str, user_response: str):
+        """Paso 3.5: Extrae medidas (Ancho x Largo) - DEPRECADO"""
+        # Este método ya no se usa, la detección es automática en _step_3_cantidad
+        pass
 
     async def _step_4_lamina(self, phone_number: str, user_response: str):
         """Paso 4: IA detecta tipo de lámina"""
@@ -491,8 +531,13 @@ Responde SOLO con el número (18, 20, 22 o 24) o "INVALIDO"."""
             resumen = f"""✅ *RESUMEN DE TU SOLICITUD*
 
 📦 *Servicio:* {data.get('servicio', 'N/A').upper()}
-📍 *Ubicación:* {data.get('ubicacion', 'N/A')}
-⚖️ *Cantidad:* {data.get('cantidad', 'N/A')}"""
+📍 *Ubicación:* {data.get('ubicacion', 'N/A')}"""
+            
+            # Mostrar cantidad o medidas
+            if data.get('cantidad'):
+                resumen += f"\n⚖️ *Cantidad:* {data.get('cantidad', 'N/A')}"
+            elif data.get('medidas'):
+                resumen += f"\n📐 *Medidas:* {data.get('medidas', 'N/A')}"
             
             if data.get('servicio') == 'rolado':
                 lamina_display = "Zintro Alum" if data.get('lamina') == 'zintro_alum' else data.get('lamina', 'N/A')
@@ -539,7 +584,7 @@ Responde SOLO con: "confirma", "cancela" o "invalido"."""
                 "lead_score": 8,
                 "is_qualified_lead": True,
                 "lead_type": "rolados_form",
-                "summary_for_seller": f"Solicitud ROLADOS: {data.get('cantidad')}",
+                "summary_for_seller": f"Solicitud ROLADOS: {data.get('cantidad') or data.get('medidas')}",
                 "project_info": data
             })
             
@@ -549,8 +594,12 @@ Tu solicitud de ARCOSUM ROLADOS ha sido registrada exitosamente y enviada al **V
 
 📦 *Detalles registrados:*
 • Servicio: {data.get('servicio').upper()}
-• Ubicación: {data.get('ubicacion')}
-• Cantidad: {data.get('cantidad')}"""
+• Ubicación: {data.get('ubicacion')}"""
+            
+            if data.get('cantidad'):
+                confirmation += f"\n• Cantidad: {data.get('cantidad')}"
+            elif data.get('medidas'):
+                confirmation += f"\n• Medidas: {data.get('medidas')}"
             
             if data.get('servicio') == 'rolado':
                 confirmation += f"""
@@ -569,6 +618,9 @@ Si es urgente: {self.vendor_phone}
             self.db.save_message(phone_number, confirmation, "sent")
             
             await self._notify_vendor(phone_number, data)
+            
+            # Mostrar menú principal
+            await self._show_main_menu(phone_number)
             
             del self.rolados_form_state[phone_number]
         
@@ -598,6 +650,27 @@ Si cambias de idea, escribe cualquier mensaje para empezar de nuevo."""
             
             self.client.send_text_message(phone_number, message)
             self.db.save_message(phone_number, message, "sent")
+
+    async def _show_main_menu(self, phone_number: str):
+        """Muestra el menú principal y pregunta si necesita algo más"""
+        
+        await asyncio.sleep(1)  # Pequeña pausa para que se vea el flujo
+        
+        menu_message = """🏭 *MENÚ PRINCIPAL - ARCOSUM*
+
+¿Necesitas algo más?
+
+1️⃣ *Rolados* - Laminados y suministros
+2️⃣ *Techos* - Estructuras y techos
+3️⃣ *Suministros* - Otros materiales
+4️⃣ *Cerrar chat* - No necesito nada más
+
+Por favor escribe el número o el nombre de lo que necesitas."""
+        
+        self.client.send_text_message(phone_number, menu_message)
+        self.db.save_message(phone_number, menu_message, "sent")
+        
+        logger.info(f"📋 Menú principal mostrado a {phone_number}")
 
     async def _notify_vendor(self, phone_number: str, form_data: Dict):
         """Notifica al vendedor usando plantilla notificacion_lead_calificado"""

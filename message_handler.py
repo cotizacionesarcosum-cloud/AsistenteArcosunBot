@@ -25,8 +25,7 @@ class MessageHandler:
         self.conversation_logger = ConversationLogger()
         self.memory_manager = MemoryManager(database)
 
-        # --- NUEVO: Control de Estados para Formularios (Rolados) ---
-        # Estructura: { "telefono": { "step": "waiting_qty", "retries": 0, "data": {} } }
+        # Control de Estados para Formularios (Rolados)
         self.form_states = {} 
 
         # Palabras clave para menú principal
@@ -42,43 +41,32 @@ class MessageHandler:
             "horario": self.handle_schedule,
         }
 
-        # Cache temporal de archivos multimedia por usuario
         self.user_media_cache = {}
-
-        # Sistema de debouncing para notificaciones
-        self.pending_notifications = {}  # {phone_number: asyncio.Task}
-        self.last_message_timestamp = {}  # {phone_number: datetime}
-        self.highest_lead_data = {}  # {phone_number: {data}}
-        self.notification_delay = 120  # 2 minutos en segundos
+        self.pending_notifications = {}
+        self.last_message_timestamp = {}
+        self.highest_lead_data = {}
+        self.notification_delay = 120
     
     async def process_message(self, from_number: str, message_text: str, message_id: str,
                             media_url: Optional[str] = None, media_type: Optional[str] = None, 
                             message_raw: Optional[Dict] = None):
         """
-        Procesa un mensaje entrante.
-        Nota: message_raw es el objeto completo de WhatsApp si lo tienes disponible desde main.py
+        Procesa un mensaje entrante con prioridad en botones interactivos.
         """
         try:
             # 1. Marcar como leído
             self.client.mark_as_read(message_id)
             self.memory_manager.cleanup_inactive_sessions()
 
-            # -----------------------------------------------------------
-            # 2. INTERCEPTAR FLUJOS MANUALES (Antes de guardar o llamar IA)
-            # -----------------------------------------------------------
-            
-            # A) Verificar si el usuario está "atrapado" en un formulario (Rolados)
-            if from_number in self.form_states and not media_url:
-                # Si está esperando respuesta de texto (kilos, ubicación)
-                self.process_rolados_input(from_number, message_text)
-                return  # <--- IMPORTANTE: Detener aquí para que NO conteste la IA
-
-            # B) Detectar respuestas interactivas (Botones/Listas) si tenemos el raw
-            # (Si no pasas message_raw desde main, asegúrate de adaptar esto)
+            # ===============================================================
+            # 2. PRIORIDAD MÁXIMA: RESPUESTAS INTERACTIVAS (Botones y Listas)
+            # ===============================================================
+            # Esto debe ir ANTES de checar form_states para que el clic del botón
+            # no sea interpretado como un error de texto.
             if message_raw and message_raw.get("type") == "interactive":
                 interaction = message_raw["interactive"]
                 
-                # Respuesta de LISTA (Selección de producto Rolados)
+                # A) Respuesta de LISTA (Selección de producto Rolados)
                 if interaction["type"] == "list_reply":
                     sel_id = interaction["list_reply"]["id"]
                     title = interaction["list_reply"]["title"]
@@ -86,24 +74,37 @@ class MessageHandler:
                         self.handle_rolados_selection(from_number, sel_id, title)
                         return
 
-                # Respuesta de BOTÓN (Selección de acabado Rolados)
+                # B) Respuesta de BOTÓN (Selección de acabado Rolados)
                 elif interaction["type"] == "button_reply":
                     btn_id = interaction["button_reply"]["id"]
                     if btn_id.startswith("fin_"):
                         self.handle_finish_selection(from_number, btn_id)
                         return
 
-            # C) Interceptar "2" o "Rolados" en texto plano
-            triggers_rolados = ["2", "opcion 2", "opción 2", "rolados", "laminas", "láminas"]
+            # ===============================================================
+            # 3. INTERCEPTAR TEXTO EN FLUJO MANUAL (Kilos, Ubicación)
+            # ===============================================================
+            # Solo entramos aquí si NO fue un botón y el usuario tiene un formulario activo
+            if from_number in self.form_states and not media_url:
+                current_step = self.form_states[from_number].get("step")
+                # Si estamos esperando que el usuario escriba algo (cantidad o ubicación)
+                if current_step in ["waiting_quantity", "waiting_location"]:
+                    self.process_rolados_input(from_number, message_text)
+                    return  # Detener aquí
+
+            # ===============================================================
+            # 4. DETECCIÓN DE COMANDO INICIAL (Opción 2)
+            # ===============================================================
             text_lower = message_text.lower().strip()
+            triggers_rolados = ["2", "opcion 2", "opción 2", "rolados", "laminas", "láminas"]
             
             if text_lower in triggers_rolados or (len(text_lower) < 10 and "2" in text_lower and "rolados" in text_lower):
                 self.start_rolados_flow(from_number)
-                return  # <--- Detener IA
+                return
 
-            # -----------------------------------------------------------
-            # 3. PROCESAMIENTO NORMAL (IA, Base de Datos, etc.)
-            # -----------------------------------------------------------
+            # ===============================================================
+            # 5. PROCESAMIENTO NORMAL (IA)
+            # ===============================================================
 
             # Guardar multimedia
             if media_url:
@@ -163,8 +164,6 @@ class MessageHandler:
             should_notify = await self.ai.should_notify_seller(ai_response)
             current_score = ai_response.get('lead_score', 0)
 
-            logger.info(f"🔍 Lead Score: {current_score}/10, Notificar: {should_notify}")
-
             if should_notify:
                 if from_number not in self.highest_lead_data or current_score > self.highest_lead_data[from_number]['score']:
                     self.highest_lead_data[from_number] = {
@@ -183,22 +182,17 @@ class MessageHandler:
 
         except Exception as e:
             logger.error(f"Error processing message from {from_number}: {str(e)}")
-            try:
-                self.client.send_text_message(from_number, "Disculpa, tuve un problema técnico. ¿Podrías repetir?")
-            except:
-                pass
+            # Evitamos enviar mensaje de error si es un reintento interno o algo menor
 
     # =========================================================================
-    # 🧱 FLUJO AUTOMÁTICO DE ROLADOS (State Machine)
+    # 🧱 FLUJO AUTOMÁTICO DE ROLADOS
     # =========================================================================
 
     def start_rolados_flow(self, phone_number: str):
-        """Paso 1: Muestra lista de materiales predeterminados"""
-        # Limpiamos estado anterior
+        """Paso 1: Muestra lista de materiales"""
         if phone_number in self.form_states:
             del self.form_states[phone_number]
             
-        # Asignamos división en DB para futuras referencias
         self.db.set_user_division(phone_number, "rolados")
 
         sections = [
@@ -221,14 +215,13 @@ class MessageHandler:
         self.db.save_message(phone_number, text, "sent")
 
     def handle_rolados_selection(self, phone_number: str, selection_id: str, title: str):
-        """Paso 2: Botones de Acabado"""
+        """Paso 2: Botones de Acabado (Sin Galvanizado)"""
         if selection_id == "rol_otro":
             self.client.send_text_message(phone_number, "Entendido. Un asesor te contactará.")
             return
 
-        # Guardamos el producto y estado
         self.form_states[phone_number] = {
-            "step": "selecting_finish",
+            "step": "selecting_finish", # Estado intermedio
             "retries": 0,
             "data": {"producto": title}
         }
@@ -236,18 +229,17 @@ class MessageHandler:
         buttons = [
             {"id": "fin_zintro", "title": "Zintro Alum"},
             {"id": "fin_pintro", "title": "Pintro"},
-            {"id": "fin_galv", "title": "Galvanizado"}
         ]
         self.client.send_interactive_buttons(phone_number, f"✅ *{title}* seleccionado.\n¿Qué acabado necesitas?", buttons)
 
     def handle_finish_selection(self, phone_number: str, button_id: str):
-        """Paso 3: Pedir Cantidad (Activa espera de texto)"""
+        """Paso 3: Guarda Acabado y pide Cantidad"""
         state = self.form_states.get(phone_number, {"data": {}, "retries": 0})
         
-        acabado = "Pintro" if "pintro" in button_id else "Zintro" if "zintro" in button_id else "Galvanizado"
+        acabado = "Pintro" if "pintro" in button_id else "Zintro Alum"
         state["data"]["acabado"] = acabado
         
-        # ACTUALIZAMOS EL ESTADO: Esperar CANTIDAD
+        # ACTUALIZAMOS EL ESTADO: Esperar TEXTO (CANTIDAD)
         state["step"] = "waiting_quantity" 
         state["retries"] = 0
         self.form_states[phone_number] = state
@@ -255,23 +247,23 @@ class MessageHandler:
         msg = (
             f"👍 Acabado: *{acabado}*.\n\n"
             "🔢 *¿Qué cantidad necesitas?*\n"
-            "Puedes responder en **kilos/toneladas** o **medidas**.\n\n"
+            "Responde con **kilos, toneladas** o **medidas**.\n\n"
             "_Ejemplo: '2 toneladas' o '10 láminas de 6 metros'_"
         )
         self.client.send_text_message(phone_number, msg)
 
     def process_rolados_input(self, phone_number: str, text: str):
-        """Maneja el texto del usuario dentro del flujo manual"""
+        """Maneja el texto (Cantidad y Ubicación)"""
         state = self.form_states.get(phone_number)
         step = state["step"]
         
-        # Validación básica
-        if len(text) < 2 or text.lower() in ["hola", "buenos dias", "gracias"]:
+        # Validación básica de longitud
+        if len(text) < 2:
             state["retries"] += 1
             if state["retries"] >= 3:
                 self.handle_rolados_failure(phone_number)
                 return
-            self.client.send_text_message(phone_number, f"⚠️ No entendí ese dato ({state['retries']}/3). Sé más específico.")
+            self.client.send_text_message(phone_number, "⚠️ Por favor sé más específico.")
             return
 
         # Lógica por pasos
@@ -295,12 +287,12 @@ class MessageHandler:
                 f"• Acabado: {data.get('acabado')}\n"
                 f"• Cantidad: {data.get('cantidad')}\n"
                 f"• Ubicación: {text}\n\n"
-                "👨‍💻 Un agente está calculando tu cotización y te contactará en breve.\n\n"
+                "👨‍💻 Un agente te contactará en breve con tu cotización.\n\n"
                 "👋 *¡Gracias por elegir ARCOSUM!*"
             )
             self.client.send_text_message(phone_number, summary)
             
-            # Guardar como log importante
+            # Guardar log importante
             self.db.save_message(phone_number, f"LEAD ROLADOS COMPLETO: {data}", "system")
             
             # Liberar usuario
@@ -308,19 +300,18 @@ class MessageHandler:
             return
 
     def handle_rolados_failure(self, phone_number: str):
-        """Se activa tras 3 intentos fallidos"""
+        """Fallo tras 3 intentos"""
         seller_phone = "522221148841"
         msg = (
             "⚠️ *No pude entender tu respuesta.*\n\n"
-            "Te comparto el contacto directo de nuestro especialista en Rolados:\n"
-            f"👤 *Omar Hernández*: https://wa.me/{seller_phone}\n"
+            f"Contacta directo a nuestro especialista:\n👤 *Omar Hernández*: https://wa.me/{seller_phone}"
         )
         self.client.send_text_message(phone_number, msg)
         if phone_number in self.form_states:
             del self.form_states[phone_number]
 
     # =========================================================================
-    # OTROS MÉTODOS EXISTENTES
+    # OTROS MÉTODOS (Sin cambios)
     # =========================================================================
 
     async def _save_media_file(self, phone_number: str, media_url: str, media_type: str):
@@ -331,13 +322,10 @@ class MessageHandler:
         })
         if len(self.user_media_cache[phone_number]) > 5:
             self.user_media_cache[phone_number] = self.user_media_cache[phone_number][-5:]
-        logger.info(f"📎 Archivo multimedia guardado: {media_type} de {phone_number}")
 
     async def _schedule_notification(self, phone_number: str):
         try:
-            logger.info(f"⏳ Iniciando temporizador para {phone_number}")
             await asyncio.sleep(self.notification_delay)
-
             if phone_number in self.last_message_timestamp:
                 time_since_last = (datetime.now() - self.last_message_timestamp[phone_number]).total_seconds()
                 if time_since_last >= self.notification_delay - 5:
@@ -417,13 +405,11 @@ Laminados y suministros industriales
             msg = "Perfecto! 🏗️ Te atenderé para *ARCOSUM TECHOS*.\n¿En qué puedo ayudarte hoy?"
             self.client.send_text_message(to, msg)
         elif message_text.strip() == "2" or tiene_rolados:
-            # Aunque interceptamos "2", esto es un fallback por si entra por aquí
             self.start_rolados_flow(to)
         else:
             msg = "Por favor elige una opción:\n\n🏗️ *1* - TECHOS\n🔧 *2* - ROLADOS"
             self.client.send_text_message(to, msg)
 
-    # ... (Resto de métodos: handle_quote_request, handle_pricing, etc. se mantienen igual)
     async def handle_quote_request(self, to: str, original_message: str):
         response = "Para cotizar necesito: Tipo de proyecto, dimensiones, ubicación y tiempo estimado."
         self.client.send_text_message(to, response)

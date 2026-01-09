@@ -234,13 +234,14 @@ Ejemplo: "100 kg" o "2 toneladas"
         
         state = self.rolados_form_state[phone_number]
         state["data"]["cantidad"] = cantidad
-        state["step"] = 3.5  # Paso intermedio
+        state["step"] = 4  # Avanzar a Step 4 (no 3.5)
         state["retry_count"] = 0
         
         # Verificar si es ROLADO o SUMINISTROS
         servicio = state["data"].get("servicio", "")
         
         if servicio == "rolado":
+            # Paso 4: Tipo de lámina
             message = """📝 *Paso 4 de 5:* ¿Qué tipo de lámina?
 
 Opciones:
@@ -251,6 +252,7 @@ Opciones:
             
             self.client.send_text_message(phone_number, message)
             self.db.save_message(phone_number, message, "sent")
+            logger.info(f"📋 Paso 4: Preguntando tipo de lámina")
         else:
             # Si es suministros, saltamos a confirmación
             state["step"] = 6

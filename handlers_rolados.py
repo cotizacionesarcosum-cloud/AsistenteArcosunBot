@@ -17,21 +17,21 @@ class RoladosHandler:
         
         self.rolados_form_state = {}
         
-        # Datos de vendedor ROLADOS (mismo para ROLADOS, SUMINISTROS y OTROS)
+        # Datos de vendedor ROLADOS
         self.vendor_phone = "+52 222 114 8841"
         
-        # Opciones de láminas (SOLO 2)
+        # Opciones de láminas
         self.tipos_lamina = [
             {"id": "zintro_alum", "title": "Zintro Alum"},
             {"id": "pintro", "title": "Pintro"},
         ]
         
-        # Calibres disponibles (18 a 24)
+        # Calibres disponibles
         self.calibres = [
-            {"id": "cal_18", "title": "Calibre 18 (2.4mm)"},
-            {"id": "cal_20", "title": "Calibre 20 (1.6mm)"},
-            {"id": "cal_22", "title": "Calibre 22 (1.2mm)"},
-            {"id": "cal_24", "title": "Calibre 24 (0.8mm)"},
+            {"id": "cal_18", "title": "Calibre 18", "desc": "2.4mm"},
+            {"id": "cal_20", "title": "Calibre 20", "desc": "1.6mm"},
+            {"id": "cal_22", "title": "Calibre 22", "desc": "1.2mm"},
+            {"id": "cal_24", "title": "Calibre 24", "desc": "0.8mm"},
         ]
 
     async def handle_rolados_message(self, phone_number: str, message_text: str, message_id: str):
@@ -57,17 +57,15 @@ class RoladosHandler:
 
 Te ayudaré a procesar tu solicitud de laminados.
 
-📝 *Paso 1 de 5:* ¿Qué servicio necesitas?"""
+📝 *Paso 1 de 5:* ¿Qué servicio necesitas?
+
+Responde con:
+1️⃣ rolado - Venta de láminas
+2️⃣ suministros - Otros suministros
+
+(Escribe: rolado o suministros)"""
         
-        # Botones interactivos
-        self.client.send_interactive_buttons(
-            phone_number,
-            message,
-            [
-                {"id": "servicio_rolado", "title": "🏗️ Rolado - Venta de láminas"},
-                {"id": "servicio_suministros", "title": "📦 Suministros"},
-            ]
-        )
+        self.client.send_text_message(phone_number, message)
         self.db.save_message(phone_number, message, "sent")
 
     async def _handle_rolados_form_response(self, phone_number: str, message_text: str):
@@ -100,7 +98,7 @@ Te ayudaré a procesar tu solicitud de laminados.
         
         user_response = user_response.lower().strip()
         
-        if user_response not in ["servicio_rolado", "servicio_suministros", "rolado", "suministros"]:
+        if user_response not in ["rolado", "suministros", "1", "2"]:
             state = self.rolados_form_state[phone_number]
             state["retry_count"] += 1
             
@@ -109,27 +107,16 @@ Te ayudaré a procesar tu solicitud de laminados.
                 await self._send_vendor_contact(phone_number)
                 return
             
-            message = f"""❌ Por favor selecciona una opción válida
+            message = f"""❌ Por favor responde con "rolado" o "suministros"
 
 *Intento {state["retry_count"]} de 3*"""
             
             self.client.send_text_message(phone_number, message)
             self.db.save_message(phone_number, message, "sent")
-            
-            # Re-enviar botones
-            message = "📝 *Paso 1 de 5:* ¿Qué servicio necesitas?"
-            self.client.send_interactive_buttons(
-                phone_number,
-                message,
-                [
-                    {"id": "servicio_rolado", "title": "🏗️ Rolado - Venta de láminas"},
-                    {"id": "servicio_suministros", "title": "📦 Suministros"},
-                ]
-            )
             return
         
         state = self.rolados_form_state[phone_number]
-        servicio = "rolado" if "rolado" in user_response else "suministros"
+        servicio = "rolado" if user_response in ["rolado", "1"] else "suministros"
         state["data"]["servicio"] = servicio
         state["step"] = 2
         state["retry_count"] = 0
@@ -139,7 +126,7 @@ Te ayudaré a procesar tu solicitud de laminados.
         # Paso 2: Ubicación
         message = """📝 *Paso 2 de 5:* ¿En qué estado y municipio?
 
-(Escribe tu ubicación, ejemplo: Puebla, Puebla)"""
+Ejemplo: Puebla, Puebla"""
         
         self.client.send_text_message(phone_number, message)
         self.db.save_message(phone_number, message, "sent")
@@ -172,7 +159,7 @@ Te ayudaré a procesar tu solicitud de laminados.
         # Paso 3: Cantidad
         message = """📝 *Paso 3 de 5:* ¿Cuántos kilos o toneladas necesitas?
 
-(Ejemplo: 500 kg, 2 toneladas, 1.5 ton)"""
+Ejemplo: 500 kg, 2 toneladas, 1.5 ton"""
         
         self.client.send_text_message(phone_number, message)
         self.db.save_message(phone_number, message, "sent")
@@ -189,7 +176,7 @@ Te ayudaré a procesar tu solicitud de laminados.
                 await self._send_vendor_contact(phone_number)
                 return
             
-            message = f"""❌ Por favor especifica una cantidad válida
+            message = f"""❌ Por favor especifica una cantidad válida (ej: 500 kg)
 
 *Intento {state["retry_count"]} de 3*"""
             
@@ -199,26 +186,26 @@ Te ayudaré a procesar tu solicitud de laminados.
         
         state = self.rolados_form_state[phone_number]
         state["data"]["cantidad"] = user_response.strip()
-        state["step"] = 4
+        state["step"] = 3.5  # Paso intermedio
         state["retry_count"] = 0
         
-        # Paso 4: Tipo de lámina (si es ROLADO)
+        # Verificar si es ROLADO o SUMINISTROS
         servicio = state["data"].get("servicio", "")
         
         if servicio == "rolado":
-            message = """📝 *Paso 4 de 5:* Tipo de lámina:"""
+            # Paso 4: Tipo de lámina
+            message = """📝 *Paso 4 de 5:* ¿Qué tipo de lámina?
+
+Responde con:
+1️⃣ zintro alum
+2️⃣ pintro
+
+(Escribe: zintro alum o pintro)"""
             
-            self.client.send_interactive_buttons(
-                phone_number,
-                message,
-                [
-                    {"id": "zintro_alum", "title": "Zintro Alum"},
-                    {"id": "pintro", "title": "Pintro"},
-                ]
-            )
+            self.client.send_text_message(phone_number, message)
             self.db.save_message(phone_number, message, "sent")
         else:
-            # Si es suministros, saltar a confirmación
+            # Si es suministros, saltamos a confirmación
             state["step"] = 6
             await self._step_6_confirmation(phone_number, None)
 
@@ -227,9 +214,18 @@ Te ayudaré a procesar tu solicitud de laminados.
         
         user_response = user_response.lower().strip()
         
-        valid_tipos = ["zintro_alum", "pintro"]
-        
-        if user_response not in valid_tipos:
+        # Aceptar múltiples formatos
+        if "zintro" in user_response and "alum" in user_response:
+            lamina_id = "zintro_alum"
+        elif "zintro" in user_response:
+            lamina_id = "zintro_alum"
+        elif "pintro" in user_response:
+            lamina_id = "pintro"
+        elif user_response == "1":
+            lamina_id = "zintro_alum"
+        elif user_response == "2":
+            lamina_id = "pintro"
+        else:
             state = self.rolados_form_state[phone_number]
             state["retry_count"] += 1
             
@@ -238,47 +234,34 @@ Te ayudaré a procesar tu solicitud de laminados.
                 await self._send_vendor_contact(phone_number)
                 return
             
-            message = f"""❌ Selecciona un tipo válido
+            message = f"""❌ Selecciona una lámina válida: zintro alum o pintro
 
 *Intento {state["retry_count"]} de 3*"""
             
             self.client.send_text_message(phone_number, message)
             self.db.save_message(phone_number, message, "sent")
-            
-            # Re-enviar botones
-            message = "📝 *Paso 4 de 5:* Tipo de lámina:"
-            self.client.send_interactive_buttons(
-                phone_number,
-                message,
-                [
-                    {"id": "zintro_alum", "title": "Zintro Alum"},
-                    {"id": "pintro", "title": "Pintro"},
-                ]
-            )
             return
         
         state = self.rolados_form_state[phone_number]
-        state["data"]["lamina"] = user_response
+        state["data"]["lamina"] = lamina_id
         state["step"] = 5
         state["retry_count"] = 0
         
-        logger.info(f"✅ Lámina: {user_response}")
+        lamina_display = "Zintro Alum" if lamina_id == "zintro_alum" else "Pintro"
+        logger.info(f"✅ Lámina: {lamina_display}")
         
         # Paso 5: Calibre
         message = """📝 *Paso 5 de 5:* ¿Qué calibre necesitas?
 
-(Solo disponemos del 18 al 24)"""
+Disponemos del 18 al 24:
+1️⃣ cal 18 (2.4mm)
+2️⃣ cal 20 (1.6mm)
+3️⃣ cal 22 (1.2mm)
+4️⃣ cal 24 (0.8mm)
+
+(Escribe: cal 18, cal 20, cal 22 o cal 24)"""
         
-        self.client.send_interactive_buttons(
-            phone_number,
-            message,
-            [
-                {"id": "cal_18", "title": "Calibre 18 (2.4mm)"},
-                {"id": "cal_20", "title": "Calibre 20 (1.6mm)"},
-                {"id": "cal_22", "title": "Calibre 22 (1.2mm)"},
-                {"id": "cal_24", "title": "Calibre 24 (0.8mm)"},
-            ]
-        )
+        self.client.send_text_message(phone_number, message)
         self.db.save_message(phone_number, message, "sent")
 
     async def _step_5_calibre(self, phone_number: str, user_response: str):
@@ -286,9 +269,17 @@ Te ayudaré a procesar tu solicitud de laminados.
         
         user_response = user_response.lower().strip()
         
-        valid_calibres = ["cal_18", "cal_20", "cal_22", "cal_24"]
+        # Detectar calibre
+        calibre_map = {
+            "cal 18": "cal_18", "cal_18": "cal_18", "18": "cal_18", "1": "cal_18",
+            "cal 20": "cal_20", "cal_20": "cal_20", "20": "cal_20", "2": "cal_20",
+            "cal 22": "cal_22", "cal_22": "cal_22", "22": "cal_22", "3": "cal_22",
+            "cal 24": "cal_24", "cal_24": "cal_24", "24": "cal_24", "4": "cal_24",
+        }
         
-        if user_response not in valid_calibres:
+        calibre_id = calibre_map.get(user_response)
+        
+        if not calibre_id:
             state = self.rolados_form_state[phone_number]
             state["retry_count"] += 1
             
@@ -297,33 +288,20 @@ Te ayudaré a procesar tu solicitud de laminados.
                 await self._send_vendor_contact(phone_number)
                 return
             
-            message = f"""❌ Selecciona un calibre válido
+            message = f"""❌ Selecciona un calibre válido: cal 18, cal 20, cal 22 o cal 24
 
 *Intento {state["retry_count"]} de 3*"""
             
             self.client.send_text_message(phone_number, message)
             self.db.save_message(phone_number, message, "sent")
-            
-            # Re-enviar botones
-            message = "📝 *Paso 5 de 5:* ¿Qué calibre necesitas?"
-            self.client.send_interactive_buttons(
-                phone_number,
-                message,
-                [
-                    {"id": "cal_18", "title": "Calibre 18 (2.4mm)"},
-                    {"id": "cal_20", "title": "Calibre 20 (1.6mm)"},
-                    {"id": "cal_22", "title": "Calibre 22 (1.2mm)"},
-                    {"id": "cal_24", "title": "Calibre 24 (0.8mm)"},
-                ]
-            )
             return
         
         state = self.rolados_form_state[phone_number]
-        state["data"]["calibre"] = user_response
+        state["data"]["calibre"] = calibre_id
         state["step"] = 6
         state["retry_count"] = 0
         
-        logger.info(f"✅ Calibre: {user_response}")
+        logger.info(f"✅ Calibre: {calibre_id}")
         
         # Paso 6: Confirmación
         await self._step_6_confirmation(phone_number, None)
@@ -338,7 +316,7 @@ Te ayudaré a procesar tu solicitud de laminados.
             # Mostrar resumen
             calibre_text = data.get('calibre', 'N/A')
             if calibre_text:
-                calibre_display = f"{calibre_text.replace('cal_', 'Calibre ')}"
+                calibre_display = calibre_text.replace('cal_', 'Cal ')
             else:
                 calibre_display = "N/A"
             
@@ -363,22 +341,17 @@ Te ayudaré a procesar tu solicitud de laminados.
             
             resumen += """
 
-¿Es correcto?"""
+¿Es correcto?
+
+Responde: sí o no"""
             
-            self.client.send_interactive_buttons(
-                phone_number,
-                resumen,
-                [
-                    {"id": "confirmar", "title": "✅ Sí, enviar"},
-                    {"id": "cancelar", "title": "❌ No, cancelar"},
-                ]
-            )
+            self.client.send_text_message(phone_number, resumen)
             self.db.save_message(phone_number, resumen, "sent")
             return
         
         user_response = user_response.lower().strip()
         
-        if user_response in ["confirmar", "sí", "si", "✅"]:
+        if user_response in ["sí", "si", "s", "yes", "1"]:
             logger.info(f"✅ Formulario ROLADOS completado para {phone_number}")
             
             # Guardar lead
@@ -386,7 +359,7 @@ Te ayudaré a procesar tu solicitud de laminados.
                 "lead_score": 8,
                 "is_qualified_lead": True,
                 "lead_type": "rolados_form",
-                "summary_for_seller": f"Solicitud ROLADOS: {data.get('cantidad')} de {data.get('lamina', 'N/A')}",
+                "summary_for_seller": f"Solicitud ROLADOS: {data.get('cantidad')}",
                 "project_info": data
             })
             
@@ -422,7 +395,7 @@ Si es urgente: {self.vendor_phone}
             # Limpiar
             del self.rolados_form_state[phone_number]
         
-        elif user_response in ["cancelar", "no", "❌"]:
+        elif user_response in ["no", "n", "0"]:
             message = """🔄 Entendido. Cancelando solicitud.
 
 Si cambias de idea, escribe cualquier mensaje para empezar de nuevo."""
@@ -441,7 +414,7 @@ Si cambias de idea, escribe cualquier mensaje para empezar de nuevo."""
                 await self._send_vendor_contact(phone_number)
                 return
             
-            message = f"""❌ Por favor responde si o no
+            message = f"""❌ Por favor responde sí o no
 
 *Intento {state["retry_count"]} de 3*"""
             
@@ -494,5 +467,5 @@ Te atenderá en menos de 30 minutos. ¡Gracias por tu paciencia!"""
     def _is_valid_cantidad(self, cantidad: str) -> bool:
         """Valida cantidad en kilos, toneladas"""
         cantidad_lower = cantidad.lower()
-        pattern = r"(\d+[\.,]?\d*)\s*(kg|tonelada|ton|t)"
+        pattern = r"(\d+[\.,]?\d*)\s*(kg|kilogramo|tonelada|ton|t)"
         return bool(re.search(pattern, cantidad_lower))

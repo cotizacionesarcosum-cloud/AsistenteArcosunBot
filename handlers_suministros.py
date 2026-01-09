@@ -7,13 +7,14 @@ import re
 logger = logging.getLogger(__name__)
 
 class SuministrosHandler:
-    """Maneja formulario y lógica de ARCOSUM SUMINISTROS"""
+    """Maneja formulario y lógica de ARCOSUM SUMINISTROS con IA asistida"""
 
-    def __init__(self, client, database, ai_assistant, notifier):
+    def __init__(self, client, database, ai_assistant, notifier, message_handler=None):
         self.client = client
         self.db = database
         self.ai = ai_assistant
         self.notifier = notifier
+        self.message_handler = message_handler  # Referencia al orquestador principal
         
         self.suministros_form_state = {}  # {phone_number: {"step": int, "data": {...}, "retry_count": int}}
         
@@ -52,13 +53,66 @@ class SuministrosHandler:
             }
         }
 
+    def _detect_division_change(self, message: str) -> str:
+        """Detecta si el usuario quiere cambiar a otra división.
+        
+        Retorna:
+        - 'techos': si menciona TECHOS
+        - 'rolados': si menciona ROLADOS
+        - 'otros': si menciona OTROS
+        - None: si no quiere cambiar
+        """
+        
+        message_lower = message.lower()
+        
+        # Detección de TECHOS
+        if any(word in message_lower for word in ["techo", "arcotecho", "estructura", "metalica"]):
+            return "techos"
+        
+        # Detección de ROLADOS
+        if any(word in message_lower for word in ["rolados", "rolado", "lamina", "laminado", "calibre"]):
+            return "rolados"
+        
+        # Detección de OTROS
+        if any(word in message_lower for word in ["otros", "otra cosa", "otra division", "consulta"]):
+            return "otros"
+        
+        return None
+
     async def handle_suministros_message(self, phone_number: str, message_text: str, message_id: str):
         """Maneja mensajes para SUMINISTROS"""
+        
+        # Detectar cambio de división en CUALQUIER momento
+        division_change = self._detect_division_change(message_text)
+        if division_change:
+            await self._redirect_division(phone_number, division_change)
+            return
         
         if phone_number in self.suministros_form_state:
             await self._handle_suministros_form_response(phone_number, message_text)
         else:
             await self._init_suministros_form(phone_number)
+
+    async def _redirect_division(self, phone_number: str, division: str):
+        """Redirige el usuario a otra división"""
+        division_names = {
+            "techos": "🏗️ ARCOSUM TECHOS",
+            "rolados": "🔧 ARCOSUM ROLADOS",
+            "otros": "❓ ARCOSUM OTROS"
+        }
+        
+        message = f"""Perfecto, te conecto con {division_names.get(division)}.
+
+Por favor escribe "hola" para comenzar de nuevo."""
+        
+        self.client.send_text_message(phone_number, message)
+        self.db.save_message(phone_number, message, "sent")
+        
+        # Limpiar estado del formulario si existe
+        if phone_number in self.suministros_form_state:
+            del self.suministros_form_state[phone_number]
+        
+        logger.info(f"🔄 Usuario redirigido a {division}")
 
     async def _init_suministros_form(self, phone_number: str):
         """Inicia el formulario de SUMINISTROS"""
@@ -111,9 +165,32 @@ Responde con el número:
             await self._send_suministros_vendor_contact(phone_number)
 
     async def _step_1_producto(self, phone_number: str, user_response: str):
-        """Paso 1: Seleccionar producto"""
+        """Paso 1: Seleccionar producto - IA asistida"""
         
         user_response = user_response.strip()
+        
+        # Usar IA para detectar intención
+        ia_prompt = f"""Analiza esta respuesta y detecta qué producto de SUMINISTROS quiere:
+- "1": Lámina Lisa para Arcotecho
+- "2": Lámina Estructural a Medida
+- "3": Extractores Atmosféricos
+- "4": Lámina Poliacrílica para Franjas de Luz
+- "5": Vigas y Trabes
+- "invalido": No es claro
+
+Respuesta: "{user_response}"
+
+Responde SOLO con: 1, 2, 3, 4, 5 o invalido"""
+        
+        try:
+            ia_response = await self.ai.generate_response(ia_prompt)
+            detected_option = ia_response.strip()
+            
+            if detected_option in ["1", "2", "3", "4", "5"]:
+                user_response = detected_option
+        except:
+            # Fallback: usar respuesta original
+            pass
         
         productos_map = {
             "1": "lamina_lisa",
@@ -134,6 +211,13 @@ Responde con el número:
             
             message = f"""❌ Por favor responde con un número válido (1, 2, 3, 4 o 5)
 
+Opciones:
+1️⃣ Lámina Lisa
+2️⃣ Lámina Estructural
+3️⃣ Extractores
+4️⃣ Lámina Poliacrílica
+5️⃣ Vigas y Trabes
+
 *Intento {state["retry_count"]} de 3*"""
             
             self.client.send_text_message(phone_number, message)
@@ -153,7 +237,7 @@ Responde con el número:
         await self._step_2_especificacion(phone_number, None)
 
     async def _step_2_especificacion(self, phone_number: str, user_response: Optional[str]):
-        """Paso 2: Seleccionar especificación (tipo de lámina, sección, etc.)"""
+        """Paso 2: Seleccionar especificación (tipo de lámina, sección, etc.) - IA asistida"""
         
         state = self.suministros_form_state[phone_number]
         producto_key = state["producto_seleccionado"]
@@ -195,9 +279,30 @@ Selecciona el tipo:
             self.db.save_message(phone_number, mensaje, "sent")
             return
         
-        # Validar respuesta
+        # Validar respuesta con IA
         producto_info = self.productos[producto_key]
         user_response = user_response.strip()
+        
+        # IA para detectar opción
+        ia_prompt = f"""El usuario está seleccionando entre estas opciones:
+"""
+        for idx, opcion in enumerate(producto_info["opciones"], 1):
+            ia_prompt += f"{idx}. {opcion['title']}\n"
+        
+        ia_prompt += f"""
+Respuesta del usuario: "{user_response}"
+
+¿Cuál es la opción seleccionada? Responde SOLO con el número (1, 2, 3...) o "invalido"."""
+        
+        try:
+            ia_response = await self.ai.generate_response(ia_prompt)
+            detected_option = ia_response.strip()
+            
+            if detected_option.isdigit():
+                user_response = detected_option
+        except:
+            # Fallback: usar respuesta original
+            pass
         
         valid_opciones = [str(i) for i in range(1, len(producto_info["opciones"]) + 1)]
         
@@ -232,7 +337,7 @@ Selecciona el tipo:
         await self._step_3_cantidad_medidas(phone_number, None)
 
     async def _step_3_cantidad_medidas(self, phone_number: str, user_response: Optional[str]):
-        """Paso 3: Cantidad (para extractores, poliacrilica) o Medidas (para estructurales)"""
+        """Paso 3: Cantidad (para extractores, poliacrilica) o Medidas (para estructurales) - IA asistida"""
         
         state = self.suministros_form_state[phone_number]
         producto_key = state["producto_seleccionado"]
@@ -265,8 +370,22 @@ Ejemplo: "2 metros x 3 metros" o "6 pies x 9 pies" """
             self.db.save_message(phone_number, message, "sent")
             return
         
-        # Validar respuesta
-        if not self._is_valid_cantidad_medida(user_response, producto_key):
+        # Usar IA para validar cantidad/medidas
+        ia_prompt = f"""Valida si esta respuesta es una cantidad o medidas válida:
+
+Respuesta: "{user_response}"
+
+Responde SOLO con: "valido" o "invalido"."""
+        
+        is_valid = False
+        try:
+            ia_response = await self.ai.generate_response(ia_prompt)
+            is_valid = "valido" in ia_response.lower()
+        except:
+            # Fallback: validación por regex
+            is_valid = self._is_valid_cantidad_medida(user_response, producto_key)
+        
+        if not is_valid:
             state = self.suministros_form_state[phone_number]
             state["retry_count"] += 1
             
@@ -304,9 +423,24 @@ Ejemplo: "3 metros" o "10 pies" """
             await self._step_5_confirmation(phone_number, None)
 
     async def _step_4_largo(self, phone_number: str, user_response: str):
-        """Paso 4: Largo de lámina estructural"""
+        """Paso 4: Largo de lámina estructural - IA asistida"""
         
-        if not self._is_valid_medida(user_response):
+        # Usar IA para validar medida
+        ia_prompt = f"""Valida si esta es una medida válida (largo):
+
+Respuesta: "{user_response}"
+
+Responde SOLO con: "valido" o "invalido"."""
+        
+        is_valid = False
+        try:
+            ia_response = await self.ai.generate_response(ia_prompt)
+            is_valid = "valido" in ia_response.lower()
+        except:
+            # Fallback: validación por regex
+            is_valid = self._is_valid_medida(user_response)
+        
+        if not is_valid:
             state = self.suministros_form_state[phone_number]
             state["retry_count"] += 1
             
@@ -316,6 +450,8 @@ Ejemplo: "3 metros" o "10 pies" """
                 return
             
             message = f"""❌ Por favor especifica un largo válido
+
+Ejemplo: "3 metros" o "10 pies"
 
 *Intento {state["retry_count"]} de 3*"""
             
@@ -328,10 +464,12 @@ Ejemplo: "3 metros" o "10 pies" """
         state["step"] = 5
         state["retry_count"] = 0
         
+        logger.info(f"✅ Largo guardado: {user_response.strip()}")
+        
         await self._step_5_confirmation(phone_number, None)
 
     async def _step_5_confirmation(self, phone_number: str, user_response: Optional[str]):
-        """Paso 5: Confirmación"""
+        """Paso 5: Confirmación - IA asistida"""
         
         state = self.suministros_form_state[phone_number]
         data = state["data"]
@@ -349,15 +487,35 @@ Ejemplo: "3 metros" o "10 pies" """
                 resumen += f"📏 *Largo:* {data.get('largo', 'N/A')}\n"
             
             resumen += """
-¿Es correcto? Responde:
-✅ Sí, enviar
-❌ No, cancelar"""
+¿Es correcto?
+
+Responde: sí o no"""
             
             self.client.send_text_message(phone_number, resumen)
             self.db.save_message(phone_number, resumen, "sent")
             return
         
-        if user_response.lower() in ["sí", "si", "✅", "ok", "enviar"]:
+        # Usar IA para detectar confirmación
+        ia_prompt = f"""¿El usuario confirma o cancela?
+
+Respuesta: "{user_response}"
+
+Responde SOLO con: "confirma", "cancela" o "invalido"."""
+        
+        try:
+            ia_response = await self.ai.generate_response(ia_prompt)
+            user_intent = ia_response.strip().lower()
+        except:
+            user_intent = "invalido"
+        
+        # Fallback: palabras clave simples
+        if user_intent == "invalido":
+            if any(w in user_response.lower() for w in ["sí", "si", "ok", "yes", "yep", "vale", "perfecto"]):
+                user_intent = "confirma"
+            elif any(w in user_response.lower() for w in ["no", "cancel", "nope", "negativo"]):
+                user_intent = "cancela"
+        
+        if user_intent == "confirma":
             logger.info(f"✅ Formulario SUMINISTROS completado para {phone_number}")
             
             # Guardar lead
@@ -369,7 +527,6 @@ Ejemplo: "3 metros" o "10 pies" """
                 "project_info": data
             })
             
-            # Mensaje de despedida MANUAL (sin IA)
             goodbye = f"""✅ *¡Solicitud Enviada Correctamente!*
 
 Tu solicitud de ARCOSUM SUMINISTROS ha sido registrada exitosamente y enviada al Vendedor de ARCOSUM.
@@ -396,8 +553,21 @@ Si es urgente: {self.vendor_phone}
             # Notificar vendedor
             await self._notify_suministros_vendor(phone_number, data)
             
-            # Limpiar
+            # Mostrar menú principal
+            await self._show_main_menu(phone_number)
+            
             del self.suministros_form_state[phone_number]
+        
+        elif user_intent == "cancela":
+            message = """🔄 Entendido. Cancelando solicitud.
+
+Si cambias de idea, escribe cualquier mensaje para empezar de nuevo."""
+            
+            self.client.send_text_message(phone_number, message)
+            self.db.save_message(phone_number, message, "sent")
+            
+            del self.suministros_form_state[phone_number]
+        
         else:
             state["retry_count"] += 1
             
@@ -406,18 +576,60 @@ Si es urgente: {self.vendor_phone}
                 await self._send_suministros_vendor_contact(phone_number)
                 return
             
-            message = f"""❌ Responde con:
-✅ Sí (enviar)
-❌ No (cancelar)
+            message = f"""❓ No entendí. Por favor responde:
+- Sí (para confirmar)
+- No (para cancelar)
 
 *Intento {state["retry_count"]} de 3*"""
             
             self.client.send_text_message(phone_number, message)
             self.db.save_message(phone_number, message, "sent")
 
-    async def _notify_suministros_vendor(self, phone_number: str, form_data: Dict):
-        """Notifica al vendedor de SUMINISTROS"""
+    async def _show_main_menu(self, phone_number: str):
+        """Muestra el menú principal a través del MessageHandler"""
         
+        await asyncio.sleep(1)  # Pequeña pausa para que se vea el flujo
+        
+        # Limpiar estado del formulario SUMINISTROS
+        if phone_number in self.suministros_form_state:
+            del self.suministros_form_state[phone_number]
+        
+        logger.info(f"📋 Redirigiendo a menú principal para {phone_number}")
+        
+        # Llamar al MessageHandler para mostrar el menú principal
+        if self.message_handler:
+            await self.message_handler.send_main_menu(phone_number)
+            logger.info(f"✅ Menú principal enviado por MessageHandler para {phone_number}")
+        else:
+            # Fallback si no hay referencia al message_handler
+            logger.warning(f"⚠️ No hay referencia a MessageHandler para {phone_number}")
+
+    async def _notify_suministros_vendor(self, phone_number: str, form_data: Dict):
+        """Notifica al vendedor de SUMINISTROS usando plantilla o mensaje directo"""
+        
+        try:
+            # Parámetros para plantilla
+            template_params = [
+                "N/A",  # {{1}} Nombre (no requerido para suministros)
+                phone_number,  # {{2}} Cliente
+                form_data.get('producto', 'N/A'),  # {{3}} Descripción/Producto
+                form_data.get('cantidad_medidas', 'N/A'),  # {{4}} Cantidad
+                form_data.get('ubicacion', 'N/A') or form_data.get('especificacion', 'N/A'),  # {{5}}
+                form_data.get('largo', 'N/A'),  # {{6}}
+            ]
+            
+            self.client.send_template_message(
+                to=self.vendor_phone,
+                template_name="notificacion_lead_calificado",
+                language_code="es_MX",
+                parameters=template_params
+            )
+            logger.info(f"📧 Notificación enviada al vendedor SUMINISTROS (plantilla)")
+            return
+        except Exception as e:
+            logger.error(f"❌ Error enviando plantilla: {str(e)}")
+        
+        # Si falla plantilla: Mensaje de texto normal
         notification = f"""🚨 *NUEVA SOLICITUD SUMINISTROS*
 
 📱 *Cliente:* {phone_number}
@@ -434,9 +646,10 @@ Si es urgente: {self.vendor_phone}
         
         try:
             self.client.send_text_message(self.vendor_phone, notification)
-            logger.info(f"📧 Notificación enviada al vendedor SUMINISTROS")
+            logger.info(f"📧 Notificación (texto) enviada al vendedor SUMINISTROS")
         except Exception as e:
-            logger.error(f"Error notificando: {str(e)}")
+            logger.error(f"❌ Error notificando al vendedor: {str(e)}")
+            logger.error(f"💡 Solución: Crea una plantilla aprobada en Meta/WhatsApp")
 
     async def _send_suministros_vendor_contact(self, phone_number: str):
         """Envía contacto del vendedor cuando hay problemas"""
@@ -455,7 +668,7 @@ Te atenderá en menos de 30 minutos. ¡Gracias por tu paciencia!"""
         if phone_number in self.suministros_form_state:
             del self.suministros_form_state[phone_number]
         
-        logger.info(f"📞 Contacto vendedor enviado")
+        logger.info(f"📞 Contacto vendedor SUMINISTROS enviado")
 
     def _is_valid_cantidad_medida(self, respuesta: str, producto_key: str) -> bool:
         """Valida cantidad o medidas según el producto"""

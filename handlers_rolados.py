@@ -18,6 +18,34 @@ class RoladosHandler:
         self.rolados_form_state = {}
         self.vendor_phone = "+52 222 114 8841"
 
+    def _detect_division_change(self, message: str) -> str:
+        """Detecta si el usuario quiere cambiar a otra división.
+        
+        Retorna:
+        - 'techos': si menciona TECHOS
+        - 'suministros': si menciona SUMINISTROS
+        - 'otros': si menciona OTROS
+        - None: si no quiere cambiar
+        """
+        
+        message_lower = message.lower()
+        
+        # Detección de TECHOS
+        if any(word in message_lower for word in ["techos", "techo", "tech", "arcotechos", "estructura"]):
+            return "techos"
+        
+        # Detección de SUMINISTROS
+        if any(word in message_lower for word in ["suministros", "suministro", "materiales", "otros materiales", "accesorios"]):
+            return "suministros"
+        
+        # Detección de OTROS
+        if any(word in message_lower for word in ["otros", "otra cosa", "otra division"]):
+            return "otros"
+        
+        return None
+
+
+
     async def handle_rolados_message(self, phone_number: str, message_text: str, message_id: str):
         """Maneja mensajes para ROLADOS"""
         
@@ -51,6 +79,22 @@ Escribe: rolado (venta de láminas) o suministros"""
     async def _step_0_nombre(self, phone_number: str, user_response: str):
         """Paso 0: Pedir nombre del cliente"""
         
+        # Detectar si quiere cambiar a otra división
+        division_change = self._detect_division_change(user_response)
+        if division_change:
+            division_names = {
+                "techos": "🏗️ ARCOSUM TECHOS",
+                "suministros": "📦 ARCOSUM SUMINISTROS",
+                "otros": "❓ ARCOSUM OTROS"
+            }
+            message = f"""Perfecto, te conecto con {division_names.get(division_change)}.
+
+Por favor escribe "hola" para comenzar de nuevo."""
+            self.client.send_text_message(phone_number, message)
+            if phone_number in self.rolados_form_state:
+                del self.rolados_form_state[phone_number]
+            return
+        
         nombre = user_response.strip()
         
         if len(nombre) < 2:
@@ -62,7 +106,7 @@ Escribe: rolado (venta de láminas) o suministros"""
                 await self._send_vendor_contact(phone_number)
                 return
             
-            message = f"""❓ Por favor especifica un nombre válido
+            message = f"""❓ Por favor especifica un nombre válido (mínimo 2 caracteres)
 
 *Intento {state["retry_count"]} de 3*"""
             
@@ -72,14 +116,14 @@ Escribe: rolado (venta de láminas) o suministros"""
         
         state = self.rolados_form_state[phone_number]
         state["data"]["nombre"] = nombre
-        state["step"] = 1
+        state["step"] = 2  # Ir directamente a ubicación (saltamos servicio)
         state["retry_count"] = 0
         
         logger.info(f"✅ Nombre: {nombre}")
         
-        message = """📝 *Paso 2 de 6:* ¿Qué servicio necesitas?
+        message = """📝 *Paso 2 de 6:* ¿En qué estado y municipio?
 
-Escribe: rolado (venta de láminas) o suministros"""
+Ejemplo: Puebla, Puebla o Tlaxcala, Tenancingo"""
         
         self.client.send_text_message(phone_number, message)
         self.db.save_message(phone_number, message, "sent")
@@ -95,8 +139,6 @@ Escribe: rolado (venta de láminas) o suministros"""
         try:
             if current_step == 0:
                 await self._step_0_nombre(phone_number, message_text)
-            elif current_step == 1:
-                await self._step_1_servicio(phone_number, message_text)
             elif current_step == 2:
                 await self._step_2_ubicacion(phone_number, message_text)
             elif current_step == 3:
@@ -178,6 +220,22 @@ Ejemplo: Puebla, Puebla o Tlaxcala, Tenancingo"""
 
     async def _step_2_ubicacion(self, phone_number: str, user_response: str):
         """Paso 2: IA valida ubicación"""
+        
+        # Detectar si quiere cambiar a otra división
+        division_change = self._detect_division_change(user_response)
+        if division_change:
+            division_names = {
+                "techos": "🏗️ ARCOSUM TECHOS",
+                "suministros": "📦 ARCOSUM SUMINISTROS",
+                "otros": "❓ ARCOSUM OTROS"
+            }
+            message = f"""Perfecto, te conecto con {division_names.get(division_change)}.
+
+Por favor escribe "hola" para comenzar de nuevo."""
+            self.client.send_text_message(phone_number, message)
+            if phone_number in self.rolados_form_state:
+                del self.rolados_form_state[phone_number]
+            return
         
         if len(user_response.strip()) < 3:
             state = self.rolados_form_state[phone_number]
@@ -356,10 +414,10 @@ Responde SOLO con: zintro_alum, pintro o invalido"""
         message = """📝 *Paso 6 de 6:* ¿Qué calibre necesitas?
 
 Disponemos de:
-- Calibre 18 (2.4mm)
-- Calibre 20 (1.6mm)
-- Calibre 22 (1.2mm)
-- Calibre 24 (0.8mm)
+- Calibre 18
+- Calibre 20
+- Calibre 22
+- Calibre 24
 
 (Escribe: cal 18, cal 20, cal 22 o cal 24)"""
         
@@ -407,10 +465,10 @@ Responde SOLO con el número (18, 20, 22 o 24) o "INVALIDO"."""
                 return
             
             message = f"""❓ Calibre no reconocido. Disponibles:
-- 18 (2.4mm)
-- 20 (1.6mm)
-- 22 (1.2mm)
-- 24 (0.8mm)
+- 18
+- 20
+- 22
+- 24
 
 *Intento {state["retry_count"]} de 3*"""
             

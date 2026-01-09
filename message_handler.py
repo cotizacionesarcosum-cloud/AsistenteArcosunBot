@@ -24,7 +24,7 @@ class MessageHandler:
         self.suministros_handler = SuministrosHandler(whatsapp_client, database, ai_assistant, notification_service)
         self.otros_handler = OtrosHandler(whatsapp_client, database, ai_assistant, notification_service)
         
-        # Rastrear división del usuario
+        # Rastrear división del usuario (cache en memoria)
         self.user_division = {}  # {phone_number: "techos" | "rolados" | "suministros" | "otros"}
 
     async def process_message(self, from_number: str, message_text: str, message_id: str,
@@ -54,17 +54,26 @@ class MessageHandler:
                 await self.send_welcome_menu(from_number)
                 return
             
-            # Verificar si el usuario tiene división asignada
-            if from_number not in self.user_division:
-                division = self.db.get_user_division(from_number)
-                if division:
-                    self.user_division[from_number] = division
+            # Cargar división de BD (verificar si ya fue asignada)
+            division_from_db = self.db.get_user_division(from_number)
+            
+            # Si ya tiene división asignada, usar esa
+            if division_from_db:
+                self.user_division[from_number] = division_from_db
+                user_division = division_from_db
+                logger.info(f"✅ División cargada de BD: {user_division} para {from_number}")
+            else:
+                # Si NO tiene división, intentar detectarla del mensaje
+                detected_division = self._detect_division_from_message(message_text)
+                
+                if detected_division:
+                    # Asignar y guardar en BD
+                    await self.handle_division_selection(from_number, detected_division)
+                    return
                 else:
-                    # Mostrar menú de nuevo
+                    # No se detectó división, mostrar menú de nuevo
                     await self.send_welcome_menu(from_number)
                     return
-            
-            user_division = self.user_division[from_number]
             
             # Enrutar a handler correspondiente
             if user_division == "techos":
@@ -90,6 +99,37 @@ class MessageHandler:
                 )
             except:
                 pass
+
+    def _detect_division_from_message(self, message_text: str) -> Optional[str]:
+        """
+        Detecta la división basada en el mensaje del usuario
+        
+        Returns:
+            "techos", "rolados", "suministros", "otros" o None
+        """
+        message_lower = message_text.lower().strip()
+        
+        # Detección numérica (principal)
+        if message_text.strip() == "1":
+            return "techos"
+        elif message_text.strip() == "2":
+            return "rolados"
+        elif message_text.strip() == "3":
+            return "suministros"
+        elif message_text.strip() == "4":
+            return "otros"
+        
+        # Detección por palabras clave (fallback)
+        if any(kw in message_lower for kw in ["techo", "arcotecho", "estructura", "metalica"]):
+            return "techos"
+        elif any(kw in message_lower for kw in ["rolado", "lamina", "laminado", "calibre"]):
+            return "rolados"
+        elif "suministro" in message_lower:
+            return "suministros"
+        elif any(kw in message_lower for kw in ["otro", "consulta", "general"]):
+            return "otros"
+        
+        return None
 
     async def send_welcome_menu(self, to: str):
         """Envía menú de bienvenida mejorado"""
@@ -123,95 +163,27 @@ Consultas generales y más
         
         Args:
             from_number: Número del cliente
-            selection: Número de división (1, 2, 3, 4)
+            selection: Código de división ("techos", "rolados", "suministros", "otros") o número (1, 2, 3, 4)
         """
         
         selection = selection.strip()
         
-        if selection == "1":
-            self.user_division[from_number] = "techos"
-            self.db.set_user_division(from_number, "techos")
-            
-            message = """✅ Perfecto! Te atenderé para **ARCOSUM TECHOS**
-
-Arcotechos y estructuras metálicas.
-
-Déjame preparar el formulario...
-
-⏳ Un momento por favor..."""
-            
-            self.client.send_text_message(from_number, message)
-            self.db.save_message(from_number, message, "sent")
-            
-            # Iniciar formulario de TECHOS
-            await asyncio.sleep(1)
-            await self.techos_handler._init_techos_form(from_number)
-            
-            logger.info(f"🏗️ División TECHOS asignada a {from_number}")
+        # Mapeo de números a divisiones
+        division_map = {
+            "1": "techos",
+            "techos": "techos",
+            "2": "rolados",
+            "rolados": "rolados",
+            "3": "suministros",
+            "suministros": "suministros",
+            "4": "otros",
+            "otros": "otros"
+        }
         
-        elif selection == "2":
-            self.user_division[from_number] = "rolados"
-            self.db.set_user_division(from_number, "rolados")
-            
-            message = """✅ Perfecto! Te atenderé para **ARCOSUM ROLADOS**
-
-Laminados y suministros industriales.
-
-Déjame preparar el formulario...
-
-⏳ Un momento por favor..."""
-            
-            self.client.send_text_message(from_number, message)
-            self.db.save_message(from_number, message, "sent")
-            
-            # Iniciar formulario de ROLADOS
-            await asyncio.sleep(1)
-            await self.rolados_handler._init_rolados_form(from_number)
-            
-            logger.info(f"🔧 División ROLADOS asignada a {from_number}")
+        division = division_map.get(selection.lower())
         
-        elif selection == "3":
-            self.user_division[from_number] = "suministros"
-            self.db.set_user_division(from_number, "suministros")
-            
-            message = """✅ Perfecto! Te atenderé para **ARCOSUM SUMINISTROS**
-
-Láminas, extractores, vigas y más.
-
-Déjame preparar el formulario...
-
-⏳ Un momento por favor..."""
-            
-            self.client.send_text_message(from_number, message)
-            self.db.save_message(from_number, message, "sent")
-            
-            # Iniciar formulario de SUMINISTROS
-            await asyncio.sleep(1)
-            await self.suministros_handler._init_suministros_form(from_number)
-            
-            logger.info(f"🏢 División SUMINISTROS asignada a {from_number}")
-        
-        elif selection == "4":
-            self.user_division[from_number] = "otros"
-            self.db.set_user_division(from_number, "otros")
-            
-            message = """✅ Perfecto! Recibiremos tu consulta general.
-
-Déjame preparar el formulario...
-
-⏳ Un momento por favor..."""
-            
-            self.client.send_text_message(from_number, message)
-            self.db.save_message(from_number, message, "sent")
-            
-            # Iniciar formulario de OTROS
-            await asyncio.sleep(1)
-            await self.otros_handler._init_otros_form(from_number)
-            
-            logger.info(f"❓ División OTROS asignada a {from_number}")
-        
-        else:
-            # Opción inválida, mostrar menú de nuevo
+        if not division:
+            # Opción inválida
             message = """❌ Opción no válida.
 
 Por favor responde con:
@@ -222,31 +194,68 @@ Por favor responde con:
             
             self.client.send_text_message(from_number, message)
             self.db.save_message(from_number, message, "sent")
+            return
+        
+        # ✅ GUARDAR DIVISIÓN EN LA BD ← CRITICAL
+        self.db.set_user_division(from_number, division)
+        logger.info(f"💾 División '{division}' guardada en BD para {from_number}")
+        
+        # Actualizar cache en memoria
+        self.user_division[from_number] = division
+        
+        # Enviar mensaje de confirmación
+        division_messages = {
+            "techos": """✅ Perfecto! Te atenderé para **ARCOSUM TECHOS**
 
-    async def process_message_with_ai(self, from_number: str, message_text: str, message_id: str):
-        """
-        Procesa mensaje con soporte de IA (para mensaje inicial sin división asignada)
-        """
+Arcotechos y estructuras metálicas.
+
+Déjame preparar el formulario...
+
+⏳ Un momento por favor...""",
+            
+            "rolados": """✅ Perfecto! Te atenderé para **ARCOSUM ROLADOS**
+
+Laminados y suministros industriales.
+
+Déjame preparar el formulario...
+
+⏳ Un momento por favor...""",
+            
+            "suministros": """✅ Perfecto! Te atenderé para **ARCOSUM SUMINISTROS**
+
+Láminas, extractores, vigas y más.
+
+Déjame preparar el formulario...
+
+⏳ Un momento por favor...""",
+            
+            "otros": """✅ Perfecto! Recibiremos tu consulta general.
+
+Déjame preparar el formulario...
+
+⏳ Un momento por favor..."""
+        }
         
-        # Detectar si está intentando seleccionar división
-        message_lower = message_text.lower().strip()
+        message = division_messages.get(division, "")
+        self.client.send_text_message(from_number, message)
+        self.db.save_message(from_number, message, "sent")
         
-        # Palabras clave para TECHOS
-        if message_text.strip() == "1" or any(kw in message_lower for kw in ["techo", "arcotecho", "estructura"]):
-            await self.handle_division_selection(from_number, "1")
+        # Esperar un poco y luego iniciar formulario
+        await asyncio.sleep(1.5)
         
-        # Palabras clave para ROLADOS
-        elif message_text.strip() == "2" or any(kw in message_lower for kw in ["rolado", "lamina", "laminado"]):
-            await self.handle_division_selection(from_number, "2")
+        # Iniciar formulario según división
+        if division == "techos":
+            await self.techos_handler._init_techos_form(from_number)
+            logger.info(f"🏗️ División TECHOS asignada e iniciada para {from_number}")
         
-        # Palabras clave para SUMINISTROS
-        elif message_text.strip() == "3" or "suministro" in message_lower:
-            await self.handle_division_selection(from_number, "3")
+        elif division == "rolados":
+            await self.rolados_handler._init_rolados_form(from_number)
+            logger.info(f"🔧 División ROLADOS asignada e iniciada para {from_number}")
         
-        # Palabras clave para OTROS
-        elif message_text.strip() == "4" or any(kw in message_lower for kw in ["otro", "consulta", "general"]):
-            await self.handle_division_selection(from_number, "4")
+        elif division == "suministros":
+            await self.suministros_handler._init_suministros_form(from_number)
+            logger.info(f"🏢 División SUMINISTROS asignada e iniciada para {from_number}")
         
-        else:
-            # No se detectó división, mostrar menú
-            await self.send_welcome_menu(from_number)
+        elif division == "otros":
+            await self.otros_handler._init_otros_form(from_number)
+            logger.info(f"❓ División OTROS asignada e iniciada para {from_number}")

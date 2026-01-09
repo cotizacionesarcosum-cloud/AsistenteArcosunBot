@@ -7,7 +7,7 @@ import re
 logger = logging.getLogger(__name__)
 
 class RoladosHandler:
-    """Maneja formulario y lógica de ARCOSUM ROLADOS"""
+    """Maneja formulario y lógica de ARCOSUM ROLADOS con IA asistida"""
 
     def __init__(self, client, database, ai_assistant, notifier):
         self.client = client
@@ -16,23 +16,7 @@ class RoladosHandler:
         self.notifier = notifier
         
         self.rolados_form_state = {}
-        
-        # Datos de vendedor ROLADOS
         self.vendor_phone = "+52 222 114 8841"
-        
-        # Opciones de láminas
-        self.tipos_lamina = [
-            {"id": "zintro_alum", "title": "Zintro Alum"},
-            {"id": "pintro", "title": "Pintro"},
-        ]
-        
-        # Calibres disponibles
-        self.calibres = [
-            {"id": "cal_18", "title": "Calibre 18", "desc": "2.4mm"},
-            {"id": "cal_20", "title": "Calibre 20", "desc": "1.6mm"},
-            {"id": "cal_22", "title": "Calibre 22", "desc": "1.2mm"},
-            {"id": "cal_24", "title": "Calibre 24", "desc": "0.8mm"},
-        ]
 
     async def handle_rolados_message(self, phone_number: str, message_text: str, message_id: str):
         """Maneja mensajes para ROLADOS"""
@@ -59,11 +43,7 @@ Te ayudaré a procesar tu solicitud de laminados.
 
 📝 *Paso 1 de 5:* ¿Qué servicio necesitas?
 
-Responde con:
-1️⃣ rolado - Venta de láminas
-2️⃣ suministros - Otros suministros
-
-(Escribe: rolado o suministros)"""
+Escribe: rolado (venta de láminas) o suministros"""
         
         self.client.send_text_message(phone_number, message)
         self.db.save_message(phone_number, message, "sent")
@@ -94,11 +74,38 @@ Responde con:
             await self._send_vendor_contact(phone_number)
 
     async def _step_1_servicio(self, phone_number: str, user_response: str):
-        """Paso 1: ¿Qué servicio necesita?"""
+        """Paso 1: IA detecta servicio"""
         
         user_response = user_response.lower().strip()
         
-        if user_response not in ["rolado", "suministros", "1", "2"]:
+        # Usar IA para detectar intención
+        ia_prompt = f"""Analiza esta respuesta del usuario y determina si quiere:
+- "rolado": Venta de láminas
+- "suministros": Otros suministros
+- "invalido": No es claro
+
+Respuesta del usuario: "{user_response}"
+
+Responde SOLO con: rolado, suministros o invalido"""
+        
+        try:
+            ia_response = await self.ai.generate_response(ia_prompt)
+            detected_service = ia_response.strip().lower()
+            
+            if detected_service not in ["rolado", "suministros"]:
+                raise ValueError("Respuesta inválida de IA")
+        except:
+            detected_service = None
+        
+        # Si IA no detectó, intentar con palabras clave simples
+        if not detected_service:
+            if "rolado" in user_response or "lamina" in user_response:
+                detected_service = "rolado"
+            elif "suministro" in user_response:
+                detected_service = "suministros"
+        
+        # Si aún no se detecta, reintentar
+        if not detected_service:
             state = self.rolados_form_state[phone_number]
             state["retry_count"] += 1
             
@@ -107,7 +114,9 @@ Responde con:
                 await self._send_vendor_contact(phone_number)
                 return
             
-            message = f"""❌ Por favor responde con "rolado" o "suministros"
+            message = f"""❓ No entendí bien. ¿Necesitas:
+- Rolado (venta de láminas)
+- Suministros (otros materiales)
 
 *Intento {state["retry_count"]} de 3*"""
             
@@ -116,25 +125,23 @@ Responde con:
             return
         
         state = self.rolados_form_state[phone_number]
-        servicio = "rolado" if user_response in ["rolado", "1"] else "suministros"
-        state["data"]["servicio"] = servicio
+        state["data"]["servicio"] = detected_service
         state["step"] = 2
         state["retry_count"] = 0
         
-        logger.info(f"✅ Servicio: {servicio}")
+        logger.info(f"✅ Servicio (IA): {detected_service}")
         
-        # Paso 2: Ubicación
         message = """📝 *Paso 2 de 5:* ¿En qué estado y municipio?
 
-Ejemplo: Puebla, Puebla"""
+Ejemplo: Puebla, Puebla o Tlaxcala, Tenancingo"""
         
         self.client.send_text_message(phone_number, message)
         self.db.save_message(phone_number, message, "sent")
 
     async def _step_2_ubicacion(self, phone_number: str, user_response: str):
-        """Paso 2: Ubicación"""
+        """Paso 2: IA valida ubicación"""
         
-        if len(user_response.strip()) < 5:
+        if len(user_response.strip()) < 3:
             state = self.rolados_form_state[phone_number]
             state["retry_count"] += 1
             
@@ -143,7 +150,7 @@ Ejemplo: Puebla, Puebla"""
                 await self._send_vendor_contact(phone_number)
                 return
             
-            message = f"""❌ Por favor especifica tu ubicación correctamente
+            message = f"""❓ Por favor especifica tu ubicación
 
 *Intento {state["retry_count"]} de 3*"""
             
@@ -156,36 +163,77 @@ Ejemplo: Puebla, Puebla"""
         state["step"] = 3
         state["retry_count"] = 0
         
-        # Paso 3: Cantidad
+        logger.info(f"✅ Ubicación: {user_response.strip()}")
+        
         message = """📝 *Paso 3 de 5:* ¿Cuántos kilos o toneladas necesitas?
 
-Ejemplo: 500 kg, 2 toneladas, 1.5 ton"""
+Ejemplos válidos:
+- 100 kilos
+- 100 kg
+- 2 toneladas
+- 1.5 ton
+- cien kilos
+- media tonelada"""
         
         self.client.send_text_message(phone_number, message)
         self.db.save_message(phone_number, message, "sent")
 
     async def _step_3_cantidad(self, phone_number: str, user_response: str):
-        """Paso 3: Cantidad"""
+        """Paso 3: IA extrae cantidad de múltiples formatos"""
         
-        if not self._is_valid_cantidad(user_response):
-            state = self.rolados_form_state[phone_number]
-            state["retry_count"] += 1
+        # Usar IA para extraer cantidad de forma inteligente
+        ia_prompt = f"""Extrae la cantidad de esta respuesta del usuario.
+
+Respuesta: "{user_response}"
+
+Normaliza el resultado a formato: "número unidad" (ejemplo: "100 kg", "2 toneladas")
+
+Responde SOLO con el formato normalizado, o "INVALIDO" si no puedes extraer."""
+        
+        try:
+            ia_response = await self.ai.generate_response(ia_prompt)
+            extracted_quantity = ia_response.strip()
             
-            if state["retry_count"] >= 3:
-                logger.warning(f"⚠️ ROLADOS {phone_number} - 3 intentos fallidos en paso 3")
-                await self._send_vendor_contact(phone_number)
-                return
+            if extracted_quantity.lower() == "invalido":
+                raise ValueError("IA marcó como inválido")
             
-            message = f"""❌ Por favor especifica una cantidad válida (ej: 500 kg)
+            # Validar que IA extrajo algo sensato
+            if not any(unit in extracted_quantity.lower() for unit in ["kg", "tonelada", "ton", "kilo"]):
+                raise ValueError("Formato inválido")
+            
+            cantidad = extracted_quantity
+            logger.info(f"✅ Cantidad (IA): {cantidad}")
+        
+        except:
+            # Fallback: intentar regex simple
+            pattern = r"(\d+[\.,]?\d*)\s*(kg|kilogramo|kilos|tonelada|ton|t)"
+            match = re.search(pattern, user_response.lower())
+            
+            if not match:
+                state = self.rolados_form_state[phone_number]
+                state["retry_count"] += 1
+                
+                if state["retry_count"] >= 3:
+                    logger.warning(f"⚠️ ROLADOS {phone_number} - 3 intentos fallidos en paso 3")
+                    await self._send_vendor_contact(phone_number)
+                    return
+                
+                message = f"""❓ No entendí la cantidad. Por favor especifica:
+- Número: 100, 50, 2.5, etc.
+- Unidad: kg, kilos, toneladas, ton
+
+Ejemplo: "100 kg" o "2 toneladas"
 
 *Intento {state["retry_count"]} de 3*"""
+                
+                self.client.send_text_message(phone_number, message)
+                self.db.save_message(phone_number, message, "sent")
+                return
             
-            self.client.send_text_message(phone_number, message)
-            self.db.save_message(phone_number, message, "sent")
-            return
+            cantidad = f"{match.group(1)} {match.group(2)}"
         
         state = self.rolados_form_state[phone_number]
-        state["data"]["cantidad"] = user_response.strip()
+        state["data"]["cantidad"] = cantidad
         state["step"] = 3.5  # Paso intermedio
         state["retry_count"] = 0
         
@@ -193,14 +241,13 @@ Ejemplo: 500 kg, 2 toneladas, 1.5 ton"""
         servicio = state["data"].get("servicio", "")
         
         if servicio == "rolado":
-            # Paso 4: Tipo de lámina
             message = """📝 *Paso 4 de 5:* ¿Qué tipo de lámina?
 
-Responde con:
-1️⃣ zintro alum
-2️⃣ pintro
+Opciones:
+- Zintro Alum
+- Pintro
 
-(Escribe: zintro alum o pintro)"""
+(Escribe cualquiera de estas)"""
             
             self.client.send_text_message(phone_number, message)
             self.db.save_message(phone_number, message, "sent")
@@ -210,22 +257,36 @@ Responde con:
             await self._step_6_confirmation(phone_number, None)
 
     async def _step_4_lamina(self, phone_number: str, user_response: str):
-        """Paso 4: Tipo de lámina"""
+        """Paso 4: IA detecta tipo de lámina"""
         
-        user_response = user_response.lower().strip()
+        # Usar IA para detectar lámina
+        ia_prompt = f"""Analiza esta respuesta y detecta qué tipo de lámina quiere:
+- "zintro_alum": Lámina Zintro Alum (zinc y aluminio)
+- "pintro": Lámina Pintro (acabado pintado)
+- "invalido": No es claro
+
+Respuesta: "{user_response}"
+
+Responde SOLO con: zintro_alum, pintro o invalido"""
         
-        # Aceptar múltiples formatos
-        if "zintro" in user_response and "alum" in user_response:
-            lamina_id = "zintro_alum"
-        elif "zintro" in user_response:
-            lamina_id = "zintro_alum"
-        elif "pintro" in user_response:
-            lamina_id = "pintro"
-        elif user_response == "1":
-            lamina_id = "zintro_alum"
-        elif user_response == "2":
-            lamina_id = "pintro"
-        else:
+        try:
+            ia_response = await self.ai.generate_response(ia_prompt)
+            detected_lamina = ia_response.strip().lower()
+            
+            if detected_lamina not in ["zintro_alum", "pintro"]:
+                raise ValueError("Respuesta inválida")
+        except:
+            detected_lamina = None
+        
+        # Fallback: palabras clave simples
+        if not detected_lamina:
+            user_lower = user_response.lower()
+            if "zintro" in user_lower:
+                detected_lamina = "zintro_alum"
+            elif "pintro" in user_lower:
+                detected_lamina = "pintro"
+        
+        if not detected_lamina:
             state = self.rolados_form_state[phone_number]
             state["retry_count"] += 1
             
@@ -234,7 +295,9 @@ Responde con:
                 await self._send_vendor_contact(phone_number)
                 return
             
-            message = f"""❌ Selecciona una lámina válida: zintro alum o pintro
+            message = f"""❓ No entendí. ¿Quieres:
+- Zintro Alum
+- Pintro
 
 *Intento {state["retry_count"]} de 3*"""
             
@@ -243,21 +306,20 @@ Responde con:
             return
         
         state = self.rolados_form_state[phone_number]
-        state["data"]["lamina"] = lamina_id
+        state["data"]["lamina"] = detected_lamina
         state["step"] = 5
         state["retry_count"] = 0
         
-        lamina_display = "Zintro Alum" if lamina_id == "zintro_alum" else "Pintro"
-        logger.info(f"✅ Lámina: {lamina_display}")
+        lamina_display = "Zintro Alum" if detected_lamina == "zintro_alum" else "Pintro"
+        logger.info(f"✅ Lámina (IA): {lamina_display}")
         
-        # Paso 5: Calibre
         message = """📝 *Paso 5 de 5:* ¿Qué calibre necesitas?
 
-Disponemos del 18 al 24:
-1️⃣ cal 18 (2.4mm)
-2️⃣ cal 20 (1.6mm)
-3️⃣ cal 22 (1.2mm)
-4️⃣ cal 24 (0.8mm)
+Disponemos de:
+- Calibre 18 (2.4mm)
+- Calibre 20 (1.6mm)
+- Calibre 22 (1.2mm)
+- Calibre 24 (0.8mm)
 
 (Escribe: cal 18, cal 20, cal 22 o cal 24)"""
         
@@ -265,19 +327,35 @@ Disponemos del 18 al 24:
         self.db.save_message(phone_number, message, "sent")
 
     async def _step_5_calibre(self, phone_number: str, user_response: str):
-        """Paso 5: Calibre"""
+        """Paso 5: IA detecta calibre"""
         
-        user_response = user_response.lower().strip()
+        # Usar IA para detectar calibre
+        ia_prompt = f"""Extrae el número de calibre de esta respuesta.
+
+Respuesta: "{user_response}"
+
+Calibres disponibles: 18, 20, 22, 24
+
+Responde SOLO con el número (18, 20, 22 o 24) o "INVALIDO"."""
         
-        # Detectar calibre
-        calibre_map = {
-            "cal 18": "cal_18", "cal_18": "cal_18", "18": "cal_18", "1": "cal_18",
-            "cal 20": "cal_20", "cal_20": "cal_20", "20": "cal_20", "2": "cal_20",
-            "cal 22": "cal_22", "cal_22": "cal_22", "22": "cal_22", "3": "cal_22",
-            "cal 24": "cal_24", "cal_24": "cal_24", "24": "cal_24", "4": "cal_24",
-        }
+        try:
+            ia_response = await self.ai.generate_response(ia_prompt)
+            calibre_num = ia_response.strip()
+            
+            if calibre_num not in ["18", "20", "22", "24"]:
+                raise ValueError("Calibre inválido")
+            
+            calibre_id = f"cal_{calibre_num}"
+        except:
+            calibre_id = None
         
-        calibre_id = calibre_map.get(user_response)
+        # Fallback: regex simple
+        if not calibre_id:
+            pattern = r"(18|20|22|24)"
+            match = re.search(pattern, user_response)
+            
+            if match:
+                calibre_id = f"cal_{match.group(1)}"
         
         if not calibre_id:
             state = self.rolados_form_state[phone_number]
@@ -288,7 +366,11 @@ Disponemos del 18 al 24:
                 await self._send_vendor_contact(phone_number)
                 return
             
-            message = f"""❌ Selecciona un calibre válido: cal 18, cal 20, cal 22 o cal 24
+            message = f"""❓ Calibre no reconocido. Disponibles:
+- 18 (2.4mm)
+- 20 (1.6mm)
+- 22 (1.2mm)
+- 24 (0.8mm)
 
 *Intento {state["retry_count"]} de 3*"""
             
@@ -301,9 +383,8 @@ Disponemos del 18 al 24:
         state["step"] = 6
         state["retry_count"] = 0
         
-        logger.info(f"✅ Calibre: {calibre_id}")
+        logger.info(f"✅ Calibre (IA): {calibre_id}")
         
-        # Paso 6: Confirmación
         await self._step_6_confirmation(phone_number, None)
 
     async def _step_6_confirmation(self, phone_number: str, user_response: Optional[str]):
@@ -314,20 +395,6 @@ Disponemos del 18 al 24:
         
         if user_response is None:
             # Mostrar resumen
-            calibre_text = data.get('calibre', 'N/A')
-            if calibre_text:
-                calibre_display = calibre_text.replace('cal_', 'Cal ')
-            else:
-                calibre_display = "N/A"
-            
-            lamina_text = data.get('lamina', 'N/A')
-            if lamina_text == 'zintro_alum':
-                lamina_display = "Zintro Alum"
-            elif lamina_text == 'pintro':
-                lamina_display = "Pintro"
-            else:
-                lamina_display = "N/A"
-            
             resumen = f"""✅ *RESUMEN DE TU SOLICITUD*
 
 📦 *Servicio:* {data.get('servicio', 'N/A').upper()}
@@ -335,6 +402,8 @@ Disponemos del 18 al 24:
 ⚖️ *Cantidad:* {data.get('cantidad', 'N/A')}"""
             
             if data.get('servicio') == 'rolado':
+                lamina_display = "Zintro Alum" if data.get('lamina') == 'zintro_alum' else data.get('lamina', 'N/A')
+                calibre_display = data.get('calibre', 'N/A').replace('cal_', 'Cal ')
                 resumen += f"""
 📋 *Lámina:* {lamina_display}
 📏 *Calibre:* {calibre_display}"""
@@ -349,9 +418,27 @@ Responde: sí o no"""
             self.db.save_message(phone_number, resumen, "sent")
             return
         
-        user_response = user_response.lower().strip()
+        # Usar IA para detectar confirmación
+        ia_prompt = f"""¿El usuario confirma o cancela?
+
+Respuesta: "{user_response}"
+
+Responde SOLO con: "confirma", "cancela" o "invalido"."""
         
-        if user_response in ["sí", "si", "s", "yes", "1"]:
+        try:
+            ia_response = await self.ai.generate_response(ia_prompt)
+            user_intent = ia_response.strip().lower()
+        except:
+            user_intent = "invalido"
+        
+        # Fallback: palabras clave simples
+        if user_intent == "invalido":
+            if any(w in user_response.lower() for w in ["sí", "si", "ok", "yes", "yep", "vale", "perfecto"]):
+                user_intent = "confirma"
+            elif any(w in user_response.lower() for w in ["no", "cancel", "nope", "negativo"]):
+                user_intent = "cancela"
+        
+        if user_intent == "confirma":
             logger.info(f"✅ Formulario ROLADOS completado para {phone_number}")
             
             # Guardar lead
@@ -363,7 +450,6 @@ Responde: sí o no"""
                 "project_info": data
             })
             
-            # Mensaje de confirmación
             confirmation = f"""✅ *¡Solicitud Enviada Correctamente!*
 
 Tu solicitud de ARCOSUM ROLADOS ha sido registrada exitosamente y enviada al **Vendedor de ARCOSUM**.
@@ -389,13 +475,11 @@ Si es urgente: {self.vendor_phone}
             self.client.send_text_message(phone_number, confirmation)
             self.db.save_message(phone_number, confirmation, "sent")
             
-            # Notificar vendedor
             await self._notify_vendor(phone_number, data)
             
-            # Limpiar
             del self.rolados_form_state[phone_number]
         
-        elif user_response in ["no", "n", "0"]:
+        elif user_intent == "cancela":
             message = """🔄 Entendido. Cancelando solicitud.
 
 Si cambias de idea, escribe cualquier mensaje para empezar de nuevo."""
@@ -403,7 +487,6 @@ Si cambias de idea, escribe cualquier mensaje para empezar de nuevo."""
             self.client.send_text_message(phone_number, message)
             self.db.save_message(phone_number, message, "sent")
             
-            # Limpiar
             del self.rolados_form_state[phone_number]
         
         else:
@@ -414,7 +497,9 @@ Si cambias de idea, escribe cualquier mensaje para empezar de nuevo."""
                 await self._send_vendor_contact(phone_number)
                 return
             
-            message = f"""❌ Por favor responde sí o no
+            message = f"""❓ No entendí. Por favor responde:
+- Sí (para confirmar)
+- No (para cancelar)
 
 *Intento {state["retry_count"]} de 3*"""
             
@@ -463,9 +548,3 @@ Te atenderá en menos de 30 minutos. ¡Gracias por tu paciencia!"""
             del self.rolados_form_state[phone_number]
         
         logger.info(f"📞 Contacto vendedor enviado")
-
-    def _is_valid_cantidad(self, cantidad: str) -> bool:
-        """Valida cantidad en kilos, toneladas"""
-        cantidad_lower = cantidad.lower()
-        pattern = r"(\d+[\.,]?\d*)\s*(kg|kilogramo|tonelada|ton|t)"
-        return bool(re.search(pattern, cantidad_lower))

@@ -118,7 +118,7 @@ Por favor escribe "hola" para comenzar de nuevo."""
         """Inicia el formulario de SUMINISTROS"""
         
         self.suministros_form_state[phone_number] = {
-            "step": 1,
+            "step": 0,  # Nuevo paso 0: pedir nombre
             "data": {},
             "retry_count": 0,
             "producto_seleccionado": None
@@ -128,15 +128,11 @@ Por favor escribe "hola" para comenzar de nuevo."""
         
         message = """🏢 *FORMULARIO SUMINISTROS* 📋
 
-¿Qué producto de ARCOSUM SUMINISTROS necesitas?
+Te ayudaré a procesar tu solicitud de suministros.
 
-Responde con el número:
+📝 *Paso 1 de 6:* ¿Cuál es tu nombre completo?
 
-1️⃣ Lámina Lisa para Arcotecho (Pintro, Zintro Alum)
-2️⃣ Lámina Estructural a Medida (R-72, R-101)
-3️⃣ Extractores Atmosféricos
-4️⃣ Lámina Poliacrílica para Franjas de Luz
-5️⃣ Vigas y Trabes (IPR, HSS)"""
+(Formato: Nombre Apellido)"""
         
         self.client.send_text_message(phone_number, message)
         self.db.save_message(phone_number, message, "sent")
@@ -150,7 +146,9 @@ Responde con el número:
         logger.info(f"📋 SUMINISTROS Form - Step: {current_step}, Message: {message_text}")
         
         try:
-            if current_step == 1:
+            if current_step == 0:
+                await self._step_0_nombre(phone_number, message_text)
+            elif current_step == 1:
                 await self._step_1_producto(phone_number, message_text)
             elif current_step == 2:
                 await self._step_2_especificacion(phone_number, message_text)
@@ -163,6 +161,51 @@ Responde con el número:
         except Exception as e:
             logger.error(f"Error en formulario SUMINISTROS: {str(e)}")
             await self._send_suministros_vendor_contact(phone_number)
+
+    async def _step_0_nombre(self, phone_number: str, user_response: str):
+        """Paso 0: Nombre del cliente"""
+        
+        if not self._is_valid_full_name(user_response):
+            state = self.suministros_form_state[phone_number]
+            state["retry_count"] += 1
+            
+            if state["retry_count"] >= 3:
+                logger.warning(f"⚠️ SUMINISTROS {phone_number} - 3 intentos fallidos en paso 0")
+                await self._send_suministros_vendor_contact(phone_number)
+                return
+            
+            message = f"""❌ Por favor ingresa nombre y apellido válidos
+
+Formato: Juan Pérez
+
+*Intento {state["retry_count"]} de 3*"""
+            
+            self.client.send_text_message(phone_number, message)
+            self.db.save_message(phone_number, message, "sent")
+            return
+        
+        state = self.suministros_form_state[phone_number]
+        state["data"]["nombre"] = user_response.strip()
+        state["step"] = 1
+        state["retry_count"] = 0
+        
+        logger.info(f"✅ Nombre guardado: {user_response}")
+        
+        nombre_corto = user_response.split()[0]
+        message = f"""✅ Gracias, {nombre_corto}!
+
+📝 *Paso 2 de 6:* ¿Qué producto de ARCOSUM SUMINISTROS necesitas?
+
+Responde con el número:
+
+1️⃣ Lámina Lisa para Arcotecho (Pintro, Zintro Alum)
+2️⃣ Lámina Estructural a Medida (R-72, R-101)
+3️⃣ Extractores Atmosféricos
+4️⃣ Lámina Poliacrílica para Franjas de Luz
+5️⃣ Vigas y Trabes (IPR, HSS)"""
+        
+        self.client.send_text_message(phone_number, message)
+        self.db.save_message(phone_number, message, "sent")
 
     async def _step_1_producto(self, phone_number: str, user_response: str):
         """Paso 1: Seleccionar producto - IA asistida"""
@@ -337,7 +380,7 @@ Respuesta del usuario: "{user_response}"
         await self._step_3_cantidad_medidas(phone_number, None)
 
     async def _step_3_cantidad_medidas(self, phone_number: str, user_response: Optional[str]):
-        """Paso 3: Cantidad (para extractores, poliacrilica) o Medidas (para estructurales) - IA asistida"""
+        """Paso 3: Cantidad (para extractores, poliacrilica) o Tonelaje/Kilos (para láminas) o Medidas (para estructurales) - IA asistida"""
         
         state = self.suministros_form_state[phone_number]
         producto_key = state["producto_seleccionado"]
@@ -353,6 +396,21 @@ Especifica:
 • Alto (en metros o pies)
 
 Ejemplo: "2 metros x 3 metros" o "6 pies x 9 pies" """
+            
+            elif producto_key == "lamina_lisa":
+                message = """⚖️ *CANTIDAD DE LÁMINA LISA*
+
+¿Cuántos kilos o toneladas necesitas?
+
+*Opción 1 - Si sabes el tonelaje:*
+- 100 kg
+- 2 toneladas
+- 1.5 ton
+
+*Opción 2 - Si NO sabes el tonelaje:*
+Dame las medidas del rollo
+Formato: Ancho x Largo
+Ejemplo: 3x30"""
             
             elif producto_key in ["extractores", "poliacrilica"]:
                 message = f"""📦 *CANTIDAD REQUERIDA*
@@ -370,8 +428,8 @@ Ejemplo: "2 metros x 3 metros" o "6 pies x 9 pies" """
             self.db.save_message(phone_number, message, "sent")
             return
         
-        # Usar IA para validar cantidad/medidas
-        ia_prompt = f"""Valida si esta respuesta es una cantidad o medidas válida:
+        # Usar IA para validar cantidad/medidas/tonelaje
+        ia_prompt = f"""Valida si esta respuesta es una cantidad, tonelaje, medidas o kilos válido:
 
 Respuesta: "{user_response}"
 
@@ -383,7 +441,7 @@ Responde SOLO con: "valido" o "invalido"."""
             is_valid = "valido" in ia_response.lower()
         except:
             # Fallback: validación por regex
-            is_valid = self._is_valid_cantidad_medida(user_response, producto_key)
+            is_valid = self._is_valid_cantidad_medida_tonelaje(user_response, producto_key)
         
         if not is_valid:
             state = self.suministros_form_state[phone_number]
@@ -394,7 +452,7 @@ Responde SOLO con: "valido" o "invalido"."""
                 await self._send_suministros_vendor_contact(phone_number)
                 return
             
-            message = f"""❌ Por favor especifica una cantidad o medida válida
+            message = f"""❌ Por favor especifica una cantidad, tonelaje o medida válida
 
 *Intento {state["retry_count"]} de 3*"""
             
@@ -683,8 +741,40 @@ Te atenderá en menos de 30 minutos. ¡Gracias por tu paciencia!"""
             pattern = r"^\d+[\.,]?\d*$"
             return bool(re.search(pattern, respuesta.strip()))
 
+    def _is_valid_cantidad_medida_tonelaje(self, respuesta: str, producto_key: str) -> bool:
+        """Valida cantidad, medidas o tonelaje según el producto"""
+        respuesta_lower = respuesta.lower()
+        
+        if producto_key == "lamina_estructural":
+            # Validar formato de medidas: "X metros x Y metros" o similar
+            pattern = r"(\d+[\.,]?\d*)\s*(metros|m|pies|feet|')\s*x\s*(\d+[\.,]?\d*)\s*(metros|m|pies|feet|')"
+            return bool(re.search(pattern, respuesta_lower, re.IGNORECASE))
+        
+        elif producto_key == "lamina_lisa":
+            # Validar tonelaje/kilos O medidas de rollo
+            # Tonelaje: "100 kg", "2 toneladas", "1.5 ton"
+            tonelaje_pattern = r"(\d+[\.,]?\d*)\s*(kg|kilogramo|kilos|tonelada|ton|t)"
+            # Medidas rollo: "3x30", "1.5 x 2"
+            medidas_pattern = r"(\d+[\.,]?\d*)\s*x\s*(\d+[\.,]?\d*)"
+            
+            return bool(re.search(tonelaje_pattern, respuesta_lower, re.IGNORECASE)) or \
+                   bool(re.search(medidas_pattern, respuesta_lower, re.IGNORECASE))
+        
+        else:
+            # Para otros productos, validar que sea un número
+            pattern = r"^\d+[\.,]?\d*$"
+            return bool(re.search(pattern, respuesta.strip()))
+
     def _is_valid_medida(self, respuesta: str) -> bool:
         """Valida una medida (largo)"""
         respuesta_lower = respuesta.lower()
         pattern = r"(\d+[\.,]?\d*)\s*(metros|m|pies|feet|')"
         return bool(re.search(pattern, respuesta_lower, re.IGNORECASE))
+
+    def _is_valid_full_name(self, name: str) -> bool:
+        """Valida nombre y apellido"""
+        parts = name.strip().split()
+        if len(parts) < 2:
+            return False
+        pattern = r"^[a-záéíóúñA-ZÁÉÍÓÚÑ\s]+$"
+        return bool(re.match(pattern, name.strip()))

@@ -18,11 +18,11 @@ class MessageHandler:
         self.ai = ai_assistant
         self.notifier = notification_service
         
-        # Inicializar handlers especializados
-        self.techos_handler = TechosHandler(whatsapp_client, database, ai_assistant, notification_service)
-        self.rolados_handler = RoladosHandler(whatsapp_client, database, ai_assistant, notification_service)
-        self.suministros_handler = SuministrosHandler(whatsapp_client, database, ai_assistant, notification_service)
-        self.otros_handler = OtrosHandler(whatsapp_client, database, ai_assistant, notification_service)
+        # Inicializar handlers especializados (pasando self como message_handler)
+        self.techos_handler = TechosHandler(whatsapp_client, database, ai_assistant, notification_service, self)
+        self.rolados_handler = RoladosHandler(whatsapp_client, database, ai_assistant, notification_service, self)
+        self.suministros_handler = SuministrosHandler(whatsapp_client, database, ai_assistant, notification_service, self)
+        self.otros_handler = OtrosHandler(whatsapp_client, database, ai_assistant, notification_service, self)
         
         # Rastrear división del usuario (cache en memoria)
         self.user_division = {}  # {phone_number: "techos" | "rolados" | "suministros" | "otros"}
@@ -67,6 +67,11 @@ class MessageHandler:
                 detected_division = self._detect_division_from_message(message_text)
                 
                 if detected_division:
+                    # Manejar cierre de chat
+                    if detected_division == "cerrar":
+                        await self.close_chat(from_number)
+                        return
+                    
                     # Asignar y guardar en BD
                     await self.handle_division_selection(from_number, detected_division)
                     return
@@ -105,7 +110,7 @@ class MessageHandler:
         Detecta la división basada en el mensaje del usuario
         
         Returns:
-            "techos", "rolados", "suministros", "otros" o None
+            "techos", "rolados", "suministros", "otros", "cerrar" o None
         """
         message_lower = message_text.lower().strip()
         
@@ -118,6 +123,8 @@ class MessageHandler:
             return "suministros"
         elif message_text.strip() == "4":
             return "otros"
+        elif message_text.strip() == "5":
+            return "cerrar"
         
         # Detección por palabras clave (fallback)
         if any(kw in message_lower for kw in ["techo", "arcotecho", "estructura", "metalica"]):
@@ -128,6 +135,8 @@ class MessageHandler:
             return "suministros"
         elif any(kw in message_lower for kw in ["otro", "consulta", "general"]):
             return "otros"
+        elif any(kw in message_lower for kw in ["cerrar", "cerrar chat", "no necesito", "listo", "gracias"]):
+            return "cerrar"
         
         return None
 
@@ -150,12 +159,42 @@ Láminas, extractores, vigas y más
 ❓ *4 - OTROS*
 Consultas generales y más
 
-¿Qué necesitas? Responde con: 1, 2, 3 o 4"""
+👋 *5 - CERRAR CHAT*
+No necesito nada más
+
+¿Qué necesitas? Responde con: 1, 2, 3, 4 o 5"""
         
         self.client.send_text_message(to, message)
         self.db.save_message(to, message, "sent")
         
         logger.info(f"📋 Menú de bienvenida enviado a {to}")
+
+    async def send_main_menu(self, to: str):
+        """Envía menú principal después de completar un formulario"""
+        
+        # Reset: Limpiar la división actual para que pueda seleccionar otra
+        self.db.set_user_division(to, None)
+        if to in self.user_division:
+            del self.user_division[to]
+        
+        logger.info(f"🔄 División reseteada para {to}")
+        
+        # Mostrar el mismo menú de bienvenida
+        await self.send_welcome_menu(to)
+
+    async def close_chat(self, from_number: str):
+        """Cierra el chat y despide al usuario"""
+        
+        closing_message = """👋 ¡Que tengas un excelente día!
+
+Gracias por usar ARCOSUM.
+
+Si necesitas algo en el futuro, estaremos aquí para ayudarte. 🏭"""
+        
+        self.client.send_text_message(from_number, closing_message)
+        self.db.save_message(from_number, closing_message, "sent")
+        
+        logger.info(f"👋 Chat cerrado para {from_number}")
 
     async def handle_division_selection(self, from_number: str, selection: str):
         """
@@ -163,7 +202,7 @@ Consultas generales y más
         
         Args:
             from_number: Número del cliente
-            selection: Código de división ("techos", "rolados", "suministros", "otros") o número (1, 2, 3, 4)
+            selection: Código de división ("techos", "rolados", "suministros", "otros") o número (1, 2, 3, 4, 5)
         """
         
         selection = selection.strip()
@@ -177,7 +216,9 @@ Consultas generales y más
             "3": "suministros",
             "suministros": "suministros",
             "4": "otros",
-            "otros": "otros"
+            "otros": "otros",
+            "5": "cerrar",
+            "cerrar": "cerrar"
         }
         
         division = division_map.get(selection.lower())
@@ -190,10 +231,16 @@ Por favor responde con:
 1️⃣ Techos
 2️⃣ Rolados
 3️⃣ Suministros
-4️⃣ Otros"""
+4️⃣ Otros
+5️⃣ Cerrar chat"""
             
             self.client.send_text_message(from_number, message)
             self.db.save_message(from_number, message, "sent")
+            return
+        
+        # Manejar cierre de chat
+        if division == "cerrar":
+            await self.close_chat(from_number)
             return
         
         # ✅ GUARDAR DIVISIÓN EN LA BD ← CRITICAL

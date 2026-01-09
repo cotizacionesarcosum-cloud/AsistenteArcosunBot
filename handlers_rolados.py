@@ -9,11 +9,12 @@ logger = logging.getLogger(__name__)
 class RoladosHandler:
     """Maneja formulario y lógica de ARCOSUM ROLADOS con IA asistida"""
 
-    def __init__(self, client, database, ai_assistant, notifier):
+    def __init__(self, client, database, ai_assistant, notifier, message_handler=None):
         self.client = client
         self.db = database
         self.ai = ai_assistant
         self.notifier = notifier
+        self.message_handler = message_handler  # Referencia al orquestador principal
         
         self.rolados_form_state = {}
         self.vendor_phone = "+52 222 114 8841"
@@ -652,25 +653,91 @@ Si cambias de idea, escribe cualquier mensaje para empezar de nuevo."""
             self.db.save_message(phone_number, message, "sent")
 
     async def _show_main_menu(self, phone_number: str):
-        """Muestra el menú principal y pregunta si necesita algo más"""
+        """Muestra el menú principal a través del MessageHandler"""
         
         await asyncio.sleep(1)  # Pequeña pausa para que se vea el flujo
         
-        menu_message = """🏭 *MENÚ PRINCIPAL - ARCOSUM*
+        # Limpiar estado del formulario ROLADOS
+        if phone_number in self.rolados_form_state:
+            del self.rolados_form_state[phone_number]
+        
+        logger.info(f"📋 Redirigiendo a menú principal para {phone_number}")
+        
+        # Llamar al MessageHandler para mostrar el menú principal
+        if self.message_handler:
+            await self.message_handler.send_main_menu(phone_number)
+            logger.info(f"✅ Menú principal enviado por MessageHandler para {phone_number}")
+        else:
+            # Fallback si no hay referencia al message_handler
+            logger.warning(f"⚠️ No hay referencia a MessageHandler para {phone_number}")
+            menu_message = """🏭 *MENÚ PRINCIPAL - ARCOSUM*
 
 ¿Necesitas algo más?
 
 1️⃣ *Rolados* - Laminados y suministros
 2️⃣ *Techos* - Estructuras y techos
 3️⃣ *Suministros* - Otros materiales
-4️⃣ *Cerrar chat* - No necesito nada más
+4️⃣ *Otros* - Consultas generales
+5️⃣ *Cerrar chat* - No necesito nada más
 
-Por favor escribe el número o el nombre de lo que necesitas."""
+Por favor escribe el número de lo que necesitas."""
+            
+            self.client.send_text_message(phone_number, menu_message)
+            self.db.save_message(phone_number, menu_message, "sent")
+
+    async def handle_main_menu_selection(self, phone_number: str, selection: str):
+        """Maneja selección del menú principal"""
         
-        self.client.send_text_message(phone_number, menu_message)
-        self.db.save_message(phone_number, menu_message, "sent")
+        selection_lower = selection.strip().lower()
         
-        logger.info(f"📋 Menú principal mostrado a {phone_number}")
+        # Mapeos válidos
+        valid_selections = {
+            "1": "rolados",
+            "rolados": "rolados",
+            "2": "techos",
+            "techos": "techos",
+            "3": "suministros",
+            "suministros": "suministros",
+            "4": "cerrar",
+            "cerrar": "cerrar",
+            "cerrar chat": "cerrar"
+        }
+        
+        action = valid_selections.get(selection_lower)
+        
+        if not action:
+            # Selección inválida, mostrar menú de nuevo
+            await self._show_main_menu(phone_number)
+            return
+        
+        if action == "cerrar":
+            # Cerrar chat
+            closing_message = """👋 Gracias por contactar a ARCOSUM.
+
+Si necesitas algo más en el futuro, estaremos aquí para ayudarte.
+
+¡Que tengas un excelente día! 🏭"""
+            
+            self.client.send_text_message(phone_number, closing_message)
+            self.db.save_message(phone_number, closing_message, "sent")
+            
+            # Limpiar estado
+            if phone_number in self.rolados_form_state:
+                del self.rolados_form_state[phone_number]
+            
+            logger.info(f"👋 Chat cerrado por usuario {phone_number}")
+            return
+        
+        # Si selecciona otra división, redirigir al handler principal
+        # Para que el MessageHandler sea el orquestador
+        logger.info(f"🔄 Usuario {phone_number} cambió a división: {action}")
+        
+        # Limpiar estado de ROLADOS
+        if phone_number in self.rolados_form_state:
+            del self.rolados_form_state[phone_number]
+        
+        # Retornar la división seleccionada para que MessageHandler la procese
+        return action
 
     async def _notify_vendor(self, phone_number: str, form_data: Dict):
         """Notifica al vendedor usando plantilla notificacion_lead_calificado"""

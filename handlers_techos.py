@@ -400,15 +400,17 @@ Si cambias de idea, escribe cualquier mensaje para empezar de nuevo."""
             logger.warning(f"⚠️ No hay referencia a MessageHandler para {phone_number}")
 
     async def _notify_techos_vendor(self, phone_number: str, form_data: Dict):
-        """Notifica al vendedor de TECHOS usando plantilla o mensaje directo"""
+        """Notifica al vendedor de TECHOS usando la misma plantilla que ROLADOS"""
         
         try:
-            # Parámetros para plantilla
+            # Parámetros para plantilla: {{1}} a {{6}}
             template_params = [
                 form_data.get('nombre', 'N/A'),  # {{1}} Nombre
                 phone_number,  # {{2}} Cliente
-                form_data.get('descripcion', 'N/A'),  # {{3}} Descripción
-                form_data.get('ubicacion', 'N/A'),  # {{4}} Ubicación
+                "TECHOS",  # {{3}} Tipo/Servicio
+                form_data.get('descripcion', 'N/A'),  # {{4}} Descripción
+                form_data.get('ubicacion', 'N/A'),  # {{5}} Ubicación
+                "Proyecto TECHOS",  # {{6}} Detalles
             ]
             
             self.client.send_template_message(
@@ -417,7 +419,8 @@ Si cambias de idea, escribe cualquier mensaje para empezar de nuevo."""
                 language_code="es_MX",
                 parameters=template_params
             )
-            logger.info(f"📧 Notificación enviada al vendedor TECHOS (plantilla)")
+            logger.info(f"📧 Notificación enviada al vendedor TECHOS (plantilla: notificacion_lead_calificado)")
+            logger.info(f"   Parámetros: {template_params}")
             return
         except Exception as e:
             logger.error(f"❌ Error enviando plantilla: {str(e)}")
